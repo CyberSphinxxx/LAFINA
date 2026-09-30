@@ -300,3 +300,76 @@ async def test_online_ai_proxy(async_client: AsyncClient):
 
     app.dependency_overrides.pop(get_deepseek_client, None)
 
+
+
+@pytest.mark.asyncio
+async def test_change_password(async_client: AsyncClient):
+    reg_res = await async_client.post("/v1/auth/register", json={
+        "email": "changer@ustp.edu.ph",
+        "password": "super-strong-lafina-passphrase-2026"
+    })
+    assert reg_res.status_code == 201
+    headers = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+
+    # A second device, to prove it is signed out by the change.
+    other_login = await async_client.post("/v1/auth/login", json={
+        "email": "changer@ustp.edu.ph",
+        "password": "super-strong-lafina-passphrase-2026"
+    })
+    other_refresh = other_login.json()["refresh_token"]
+
+    # A token alone is not enough: the current password is required.
+    wrong_res = await async_client.post("/v1/auth/password", headers=headers, json={
+        "current_password": "not-the-password",
+        "new_password": "a-brand-new-passphrase-2026"
+    })
+    # 400, not 401: a typo must not look like an expired session to the client.
+    assert wrong_res.status_code == 400
+    assert "Current password is incorrect" in wrong_res.json()["detail"]
+
+    # The same policy as registration applies to the replacement.
+    short_res = await async_client.post("/v1/auth/password", headers=headers, json={
+        "current_password": "super-strong-lafina-passphrase-2026",
+        "new_password": "12345"
+    })
+    assert short_res.status_code == 400
+    assert "at least 6 characters" in short_res.json()["detail"]
+
+    same_res = await async_client.post("/v1/auth/password", headers=headers, json={
+        "current_password": "super-strong-lafina-passphrase-2026",
+        "new_password": "super-strong-lafina-passphrase-2026"
+    })
+    assert same_res.status_code == 400
+    assert "different" in same_res.json()["detail"]
+
+    anon_res = await async_client.post("/v1/auth/password", json={
+        "current_password": "super-strong-lafina-passphrase-2026",
+        "new_password": "a-brand-new-passphrase-2026"
+    })
+    assert anon_res.status_code in (401, 403)
+
+    ok_res = await async_client.post("/v1/auth/password", headers=headers, json={
+        "current_password": "super-strong-lafina-passphrase-2026",
+        "new_password": "a-brand-new-passphrase-2026"
+    })
+    assert ok_res.status_code == 200
+
+    old_login = await async_client.post("/v1/auth/login", json={
+        "email": "changer@ustp.edu.ph",
+        "password": "super-strong-lafina-passphrase-2026"
+    })
+    assert old_login.status_code == 401
+
+    new_login = await async_client.post("/v1/auth/login", json={
+        "email": "changer@ustp.edu.ph",
+        "password": "a-brand-new-passphrase-2026"
+    })
+    assert new_login.status_code == 200
+
+    # The session that made the change stays usable...
+    me_res = await async_client.get("/v1/me", headers=headers)
+    assert me_res.status_code == 200
+
+    # ...while every other device is signed out.
+    stale_res = await async_client.post("/v1/auth/refresh", json={"refresh_token": other_refresh})
+    assert stale_res.status_code == 401

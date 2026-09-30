@@ -391,5 +391,55 @@ describe('icsHelper', () => {
     expect(parsed.events.length).toBeGreaterThanOrEqual(730);
     expect(parsed.events.length).toBeLessThanOrEqual(732);
   });
-});
+  describe('calendars exported by other apps', () => {
+    const foreignCalendar = (extraLines: string[] = []): string =>
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Google Inc//Google Calendar 70.9054//EN',
+        'BEGIN:VEVENT',
+        'UID:abc123@google.com',
+        'DTSTART:20260625T090000',
+        'DTEND:20260625T103000',
+        'SUMMARY:CS 101 Lecture',
+        ...extraLines,
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n');
 
+    it('imports an unlabelled entry as a time block, not an event', () => {
+      const parsed = parseIcsString(foreignCalendar());
+      expect(parsed.events).toHaveLength(0);
+      expect(parsed.blocks).toHaveLength(1);
+      expect(parsed.blocks[0]).toMatchObject({
+        title: 'CS 101 Lecture',
+        date: '2026-06-25',
+        startTime: '09:00',
+        endTime: '10:30',
+      });
+    });
+
+    it('files an unlabelled entry under no category, so the import calls it Imported', () => {
+      expect(parseIcsString(foreignCalendar()).blocks[0].category).toBe('');
+      // A category the file did state is kept.
+      expect(parseIcsString(foreignCalendar(['CATEGORIES:School'])).blocks[0].category).toBe('School');
+    });
+
+    it('still honours an entry LAFINA itself labelled an event', () => {
+      const parsed = parseIcsString(foreignCalendar(['X-LAFINA-TYPE:event']));
+      expect(parsed.blocks).toHaveLength(0);
+      expect(parsed.events).toHaveLength(1);
+    });
+
+    it('keeps a LAFINA block without CATEGORIES on Work', () => {
+      const parsed = parseIcsString(foreignCalendar(['X-LAFINA-TYPE:time_block']));
+      expect(parsed.blocks[0].category).toBe('Work');
+    });
+
+    it('reads a recurring unlabelled entry as repeating time blocks', () => {
+      const parsed = parseIcsString(foreignCalendar(['RRULE:FREQ=WEEKLY;COUNT=3']));
+      expect(parsed.events).toHaveLength(0);
+      expect(parsed.blocks).toHaveLength(3);
+    });
+  });
+});

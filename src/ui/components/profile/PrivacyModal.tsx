@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, Modal } from 'react-native';
-import { Colors, Fonts } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Colors, Fonts, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 
 interface PrivacyModalProps {
   visible: boolean;
@@ -12,7 +12,7 @@ export const PrivacyModal: React.FC<PrivacyModalProps> = ({
   visible,
   onClose,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   return (
     <Modal
@@ -110,23 +110,20 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors } = useTheme();
-  return {
-    privacyContainer: {
-      backgroundColor: colors.background,
-    },
-    privacyHeader: {
-      borderBottomColor: colors.border,
-    },
-    privacyHeaderTitle: {
-      color: colors.textPrimary,
-    },
-    privacySectionTitle: {
-      color: colors.textPrimary,
-    },
-    privacyBodyText: {
-      color: colors.textSecondary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors) => ({
+  privacyContainer: {
+    backgroundColor: colors.background,
+  },
+  privacyHeader: {
+    borderBottomColor: colors.border,
+  },
+  privacyHeaderTitle: {
+    color: colors.textPrimary,
+  },
+  privacySectionTitle: {
+    color: colors.textPrimary,
+  },
+  privacyBodyText: {
+    color: colors.textSecondary,
+  },
+});

@@ -12,6 +12,7 @@ import { Check, X, Trash2 } from 'lucide-react-native';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Fonts, Colors, Shadows } from '../../theme';
 import { ImportBatch } from '../../../storage/importedBatchesStore';
+import { HOLIDAY_CALENDAR_ID, HOLIDAY_CALENDAR_NAME } from '../../screens/calendar/utils/philippineHolidays';
 
 interface CalendarLayersModalProps {
   visible: boolean;
@@ -39,6 +40,7 @@ export const CalendarLayersModal: React.FC<CalendarLayersModalProps> = ({
   const { colors } = useTheme();
   
   const mainVisible = visibilityMap.main !== false;
+  const holidaysVisible = visibilityMap[HOLIDAY_CALENDAR_ID] !== false;
 
   /**
    * Generates a stable color from the calendar filename to display next to the checkbox.
@@ -95,6 +97,28 @@ export const CalendarLayersModal: React.FC<CalendarLayersModalProps> = ({
                       {username || 'Main Calendar'}
                     </Text>
                     <Text style={[styles.itemSub, { color: colors.textSecondary }]}>Primary Schedule</Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* Built in, like Google Calendar's holiday layer: nothing to import */}
+                <TouchableOpacity
+                  style={[styles.item, { borderBottomColor: colors.border }]}
+                  activeOpacity={0.7}
+                  onPress={() => onToggleVisibility(HOLIDAY_CALENDAR_ID, !holidaysVisible)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: holidaysVisible }}
+                  accessibilityLabel={HOLIDAY_CALENDAR_NAME}
+                >
+                  <View style={[
+                    styles.checkbox,
+                    { borderColor: colors.holiday },
+                    holidaysVisible && { backgroundColor: colors.holiday }
+                  ]}>
+                    {holidaysVisible && <Check size={12} color={colors.white} strokeWidth={3} />}
+                  </View>
+                  <View style={styles.textContainer}>
+                    <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>{HOLIDAY_CALENDAR_NAME}</Text>
+                    <Text style={[styles.itemSub, { color: colors.textSecondary }]}>Regular and special non-working days</Text>
                   </View>
                 </TouchableOpacity>
 

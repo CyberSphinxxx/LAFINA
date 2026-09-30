@@ -40,14 +40,6 @@ export const getHeaderTitle = (
   currentDate: Date,
   weekDays: Date[],
 ): string => {
-  if (viewMode === 'day') {
-    return selectedDate.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  }
   if (viewMode === 'week') {
     if (weekDays.length === 0) return '';
     const start = weekDays[0];

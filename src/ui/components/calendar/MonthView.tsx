@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Colors, Fonts } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Colors, Fonts, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 import { TimeBlock } from '../../../storage/timeBlocksStore';
 import { Task, Event } from '../../../storage/tasksStore';
 
@@ -32,7 +32,7 @@ export const MonthView: React.FC<MonthViewProps> = ({
   weekStartsMonday,
   onDayTap,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   const getDaysInMonth = (date: Date) => {
     const year = date.getFullYear();
@@ -223,35 +223,32 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors } = useTheme();
-  return {
-    monthGridContainer: {
-      backgroundColor: colors.background,
-    },
-    weekdayHeaderRow: {
-      borderBottomColor: colors.border,
-    },
-    weekdayLabel: {
-      color: colors.textSecondary,
-    },
-    calendarCell: {
-      borderColor: colors.border,
-    },
-    dayContainer: {
-      backgroundColor: 'transparent',
-    },
-    dayText: {
-      color: colors.textPrimary,
-    },
-    monthItemPreview: {
-      backgroundColor: colors.inputBg,
-    },
-    monthItemText: {
-      color: colors.textPrimary,
-    },
-    monthItemMore: {
-      color: colors.red,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors) => ({
+  monthGridContainer: {
+    backgroundColor: colors.background,
+  },
+  weekdayHeaderRow: {
+    borderBottomColor: colors.border,
+  },
+  weekdayLabel: {
+    color: colors.textSecondary,
+  },
+  calendarCell: {
+    borderColor: colors.border,
+  },
+  dayContainer: {
+    backgroundColor: 'transparent',
+  },
+  dayText: {
+    color: colors.textPrimary,
+  },
+  monthItemPreview: {
+    backgroundColor: colors.inputBg,
+  },
+  monthItemText: {
+    color: colors.textPrimary,
+  },
+  monthItemMore: {
+    color: colors.red,
+  },
+});

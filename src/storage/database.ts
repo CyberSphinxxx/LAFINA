@@ -8,6 +8,7 @@ export interface QueryResult {
 /** Minimal transaction interface with executeSync */
 export interface DatabaseTransaction {
   executeSync: (query: string, params?: any[]) => QueryResult;
+  afterCommit?: (callback: () => void) => void;
 }
 
 let dbInstance: any;
@@ -128,13 +129,13 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
         }
 
         // Filter: user_id = ?
-        if (upper.includes('USER_ID = ?') || upper.includes('USER_ID=?')) {
+        if (/\bUSER_ID\s*=\s*\?/i.test(q)) {
           const userId = params[0];
           rows = rows.filter(r => r.user_id === userId);
         }
 
         // Filter: id = ?
-        if (upper.includes('ID = ?') || upper.includes('ID=?')) {
+        if (/\bID\s*=\s*\?/i.test(q)) {
           const idVal = params[params.length - 1];
           rows = rows.filter(r => r.id === idVal);
         }
@@ -217,9 +218,27 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
       const match = q.match(/DELETE\s+FROM\s+(\w+)/i);
       if (match) {
         const tableName = match[1].toLowerCase();
-        fallbackTables[tableName] = [];
+        const rows = fallbackTables[tableName] || [];
+        const whereMatch = q.match(/\bWHERE\s+(.+)$/i);
+        if (!whereMatch) {
+          fallbackTables[tableName] = [];
+          saveToStorage();
+          return { rows: [], rowsAffected: rows.length };
+        }
+
+        const equalityColumns = Array.from(
+          whereMatch[1].matchAll(/\b(\w+)\s*=\s*\?/gi),
+          (condition) => condition[1].toLowerCase(),
+        );
+        if (equalityColumns.length === 0) {
+          return { rows: [], rowsAffected: 0 };
+        }
+        const retainedRows = rows.filter((row) => !equalityColumns.every(
+          (column, index) => row[column] === params[index],
+        ));
+        fallbackTables[tableName] = retainedRows;
         saveToStorage();
-        return { rows: [], rowsAffected: 1 };
+        return { rows: [], rowsAffected: rows.length - retainedRows.length };
       }
     }
   } catch (err) {
@@ -231,6 +250,9 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
 
 // 3. Export Database API
 export const db = {
+  /** Returns whether the in-memory compatibility database is active. */
+  isFallback: (): boolean => useFallback,
+
   executeSync: (query: string, params?: any[]): QueryResult => {
     if (useFallback) {
       return executeFallbackQuery(query, params);
@@ -238,12 +260,73 @@ export const db = {
     return dbInstance.executeSync(query, params);
   },
 
+  /** Runs synchronous local writes atomically and rolls them back if the callback throws. */
+  transactionSync: <T>(cb: (tx: DatabaseTransaction) => T): T => {
+    const afterCommitCallbacks: Array<() => void> = [];
+    const runAfterCommitCallbacks = (): void => {
+      afterCommitCallbacks.forEach((callback) => {
+        try {
+          callback();
+        } catch (error) {
+          console.error('Post-commit database callback failed:', error);
+        }
+      });
+    };
+
+    if (useFallback) {
+      const snapshot = JSON.parse(JSON.stringify(fallbackTables)) as typeof fallbackTables;
+      const txFallback: DatabaseTransaction = {
+        executeSync: (query: string, params?: any[]) => executeFallbackQuery(query, params),
+        afterCommit: (callback: () => void) => afterCommitCallbacks.push(callback),
+      };
+
+      try {
+        const result = cb(txFallback);
+        runAfterCommitCallbacks();
+        return result;
+      } catch (error) {
+        Object.keys(fallbackTables).forEach((tableName) => delete fallbackTables[tableName]);
+        Object.assign(fallbackTables, snapshot);
+        saveToStorage();
+        throw error;
+      }
+    }
+
+    dbInstance.executeSync('BEGIN TRANSACTION;');
+    try {
+      const tx: DatabaseTransaction = {
+        executeSync: (query: string, params?: any[]) => dbInstance.executeSync(query, params),
+        afterCommit: (callback: () => void) => afterCommitCallbacks.push(callback),
+      };
+      const result = cb(tx);
+      dbInstance.executeSync('COMMIT;');
+      runAfterCommitCallbacks();
+      return result;
+    } catch (error) {
+      dbInstance.executeSync('ROLLBACK;');
+      throw error;
+    }
+  },
+
   transaction: async (cb: (tx: DatabaseTransaction) => Promise<void>): Promise<void> => {
+    const afterCommitCallbacks: Array<() => void> = [];
+    const runAfterCommitCallbacks = (): void => {
+      afterCommitCallbacks.forEach((callback) => {
+        try {
+          callback();
+        } catch (error) {
+          console.error('Post-commit database callback failed:', error);
+        }
+      });
+    };
+
     if (useFallback) {
       const txFallback: DatabaseTransaction = {
         executeSync: (query: string, params?: any[]) => executeFallbackQuery(query, params),
+        afterCommit: (callback: () => void) => afterCommitCallbacks.push(callback),
       };
       await cb(txFallback);
+      runAfterCommitCallbacks();
       return;
     }
 
@@ -252,9 +335,11 @@ export const db = {
     try {
       const tx: DatabaseTransaction = {
         executeSync: (query: string, params?: any[]) => dbInstance.executeSync(query, params),
+        afterCommit: (callback: () => void) => afterCommitCallbacks.push(callback),
       };
       await cb(tx);
       dbInstance.executeSync('COMMIT;');
+      runAfterCommitCallbacks();
     } catch (err) {
       dbInstance.executeSync('ROLLBACK;');
       throw err;

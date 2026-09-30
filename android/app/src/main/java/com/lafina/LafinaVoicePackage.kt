@@ -13,12 +13,16 @@ class LafinaVoicePackage : ReactPackage {
       LafinaIntentExtractorModule(reactContext),
       LafinaTTSModule(reactContext),
       LafinaReminderModule(reactContext),
+      LafinaMeetingRecorderModule(reactContext),
       AndroidKeystoreModule(reactContext),
-      AndroidConnectivityModule(reactContext)
+      AndroidConnectivityModule(reactContext),
+      LafinaUpdaterModule(reactContext),
+      LafinaGrainientModule(reactContext),
+      LafinaThemeRevealModule(reactContext)
     )
   }
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
-    return emptyList()
+    return listOf(LafinaGrainientViewManager())
   }
 }

@@ -8,6 +8,41 @@ from backend.app.config import Settings
 
 logger = logging.getLogger("lafina.deepseek")
 
+# Upstream error bodies are provider text, never our key or the user's prompt,
+# so they are safe to log and to pass back to the caller.
+_MAX_UPSTREAM_DETAIL_CHARS = 300
+
+
+def extract_upstream_error(body_text: str) -> str:
+    """Pull the provider's own explanation out of a non-200 response.
+
+    DeepSeek answers with ``{"error": {"message": ...}}``; a gateway in front of
+    it may answer with plain text or HTML. Without this the caller only sees a
+    status code, which is not enough to tell "no credit" from "wrong plan" from
+    "model not enabled" — all of which arrive as 402.
+    """
+    text = (body_text or "").strip()
+    if not text:
+        return "(empty response body)"
+    try:
+        import json
+
+        data = json.loads(text)
+    except ValueError:
+        return text[:_MAX_UPSTREAM_DETAIL_CHARS]
+
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("type") or error.get("code")
+            if message:
+                return str(message)[:_MAX_UPSTREAM_DETAIL_CHARS]
+        elif isinstance(error, str) and error:
+            return error[:_MAX_UPSTREAM_DETAIL_CHARS]
+        if data.get("message"):
+            return str(data["message"])[:_MAX_UPSTREAM_DETAIL_CHARS]
+    return text[:_MAX_UPSTREAM_DETAIL_CHARS]
+
 
 class DeepSeekError(Exception):
     """Base exception for DeepSeek client errors."""
@@ -131,6 +166,51 @@ class DeepSeekClient:
         Executes chat completion request to DeepSeek API with non-thinking mode disabled.
         Returns (reply_content, usage_dict).
         """
+        return await self._completion(
+            messages=messages,
+            user_id=user_id,
+            request_id=request_id,
+            max_tokens=1024,
+            temperature=0.7,
+        )
+
+    async def json_completion(
+        self,
+        messages: list[dict[str, str]],
+        user_id: str,
+        request_id: str = "",
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        json_mode: bool = False,
+    ) -> tuple[str, dict[str, int]]:
+        """Completion tuned for callers that need machine-readable output.
+
+        Same OpenAI-compatible endpoint as the chat proxy, with a near-zero
+        temperature and room for a long reply, because a deck of flashcards is
+        both longer than a chat turn and worthless if the model gets creative
+        with the shape of it. ``json_mode`` also asks the provider to return a
+        JSON object; the prompt must say "JSON" for DeepSeek to accept it.
+        """
+        return await self._completion(
+            messages=messages,
+            user_id=user_id,
+            request_id=request_id,
+            max_tokens=max_tokens,
+            temperature=0.1,
+            model=model,
+            json_mode=json_mode,
+        )
+
+    async def _completion(
+        self,
+        messages: list[dict[str, str]],
+        user_id: str,
+        request_id: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        json_mode: bool = False,
+    ) -> tuple[str, dict[str, int]]:
         reason = self.settings.get_deepseek_key_invalid_reason()
         if reason is not None:
             logger.warning(
@@ -149,15 +229,18 @@ class DeepSeekClient:
             "Content-Type": "application/json"
         }
 
+        chosen_model = model or self.settings.DEEPSEEK_MODEL
         payload = {
-            "model": self.settings.DEEPSEEK_MODEL,
+            "model": chosen_model,
             "messages": messages,
             "stream": False,
             "thinking": {"type": "disabled"},
-            "max_tokens": 1024,
-            "temperature": 0.7,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
             "user": user_id
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         url = f"{self.settings.DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions"
         start_time = time.monotonic()
@@ -179,22 +262,38 @@ class DeepSeekClient:
 
         if res.status_code != 200:
             status_code = res.status_code
+            # The provider's own message is the only thing that distinguishes,
+            # say, an unfunded account from an expired grant or a model the
+            # account cannot use — all of which DeepSeek reports as 402.
+            detail = extract_upstream_error(res.text)
             logger.warning(
-                f"DeepSeek upstream error HTTP {status_code} after {duration_ms}ms [requestId={request_id}]"
+                f"DeepSeek upstream error HTTP {status_code} after {duration_ms}ms "
+                f"[requestId={request_id}] model={chosen_model} "
+                f"upstream_detail={detail!r}"
             )
             if status_code == 401:
-                raise DeepSeekAuthenticationError()
+                raise DeepSeekAuthenticationError(
+                    f"DeepSeek provider authentication failed: {detail}"
+                )
             elif status_code == 402:
-                raise DeepSeekBillingError()
+                raise DeepSeekBillingError(
+                    f"DeepSeek provider billing is unavailable: {detail}"
+                )
             elif status_code == 429:
-                raise DeepSeekRateLimitError()
+                raise DeepSeekRateLimitError(
+                    f"DeepSeek rate limit exceeded. Please try again later: {detail}"
+                )
             elif status_code in (400, 422):
-                raise DeepSeekInvalidRequestError()
+                raise DeepSeekInvalidRequestError(
+                    f"Invalid request sent to DeepSeek provider: {detail}"
+                )
             elif status_code in (500, 503):
-                raise DeepSeekProviderServerError()
+                raise DeepSeekProviderServerError(
+                    f"DeepSeek provider temporary outage: {detail}"
+                )
             else:
                 raise DeepSeekError(
-                    message=f"DeepSeek provider returned error status {status_code}",
+                    message=f"DeepSeek provider returned error status {status_code}: {detail}",
                     status_code=502
                 )
 
@@ -224,7 +323,7 @@ class DeepSeekClient:
 
         logger.info(
             f"DeepSeek request success: status=200, duration={duration_ms}ms, "
-            f"model={self.settings.DEEPSEEK_MODEL}, prompt_tokens={usage_dict['prompt_tokens']}, "
+            f"model={chosen_model}, prompt_tokens={usage_dict['prompt_tokens']}, "
             f"completion_tokens={usage_dict['completion_tokens']} [requestId={request_id}]"
         )
 

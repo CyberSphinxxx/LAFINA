@@ -1,89 +1,101 @@
 import { importedBatchesStore } from '../../src/storage/importedBatchesStore';
 import RNFS from 'react-native-fs';
 
-describe('importedBatchesStore', () => {
+const ownedBatch = (userId: string, id: string) => ({
+  id,
+  userId,
+  timestamp: '2026-06-24T12:00:00Z',
+  fileName: `${userId}.ics`,
+  events: [`${userId}-event`],
+  blocks: [`${userId}-block`],
+  tasks: [`${userId}-task`],
+});
+
+describe('importedBatchesStore account isolation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  test('should return empty array if batches file does not exist', async () => {
+  it('returns an empty array when the batch file does not exist', async () => {
     (RNFS.exists as jest.Mock).mockResolvedValueOnce(false);
 
-    const batches = await importedBatchesStore.getImportedBatches();
-    expect(batches).toEqual([]);
-    expect(RNFS.exists).toHaveBeenCalled();
+    await expect(importedBatchesStore.getImportedBatches('user-a')).resolves.toEqual([]);
     expect(RNFS.readFile).not.toHaveBeenCalled();
   });
 
-  test('should return parsed batches if file exists', async () => {
-    const mockData = [
-      {
-        id: 'batch_1',
-        timestamp: '2026-06-24T12:00:00Z',
-        fileName: 'calendar.ics',
-        events: ['e1'],
-        blocks: ['b1'],
-        tasks: ['t1'],
-      },
-    ];
+  it('returns only the requested user and quarantines legacy ownerless batches', async () => {
+    const legacy = {
+      id: 'legacy-batch',
+      timestamp: '2026-06-24T12:00:00Z',
+      fileName: 'legacy.ics',
+      events: ['legacy-event'],
+      blocks: [],
+      tasks: [],
+    };
     (RNFS.exists as jest.Mock).mockResolvedValueOnce(true);
-    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockData));
+    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify([
+      ownedBatch('user-a', 'batch-a'),
+      ownedBatch('user-b', 'batch-b'),
+      legacy,
+    ]));
 
-    const batches = await importedBatchesStore.getImportedBatches();
-    expect(batches).toEqual(mockData);
-    expect(RNFS.exists).toHaveBeenCalled();
-    expect(RNFS.readFile).toHaveBeenCalled();
+    await expect(importedBatchesStore.getImportedBatches('user-a')).resolves.toEqual([
+      ownedBatch('user-a', 'batch-a'),
+    ]);
   });
 
-  test('should save a new imported batch successfully', async () => {
-    (RNFS.exists as jest.Mock).mockResolvedValueOnce(false); // getImportedBatches returns empty list
-    (RNFS.writeFile as jest.Mock).mockResolvedValueOnce(undefined);
-
-    await importedBatchesStore.saveImportedBatch('school.ics', ['ev_1'], ['bl_1'], ['tk_1']);
-
-    expect(RNFS.writeFile).toHaveBeenCalled();
-    const writeArgs = (RNFS.writeFile as jest.Mock).mock.calls[0];
-    const parsedWritten = JSON.parse(writeArgs[1]);
-
-    expect(parsedWritten).toHaveLength(1);
-    expect(parsedWritten[0].fileName).toBe('school.ics');
-    expect(parsedWritten[0].events).toEqual(['ev_1']);
-    expect(parsedWritten[0].blocks).toEqual(['bl_1']);
-    expect(parsedWritten[0].tasks).toEqual(['tk_1']);
-  });
-
-  test('should delete an existing batch from tracking record', async () => {
-    const mockData = [
-      {
-        id: 'batch_1',
-        timestamp: '2026-06-24T12:00:00Z',
-        fileName: 'calendar.ics',
-        events: ['e1'],
-        blocks: ['b1'],
-        tasks: ['t1'],
-      },
-    ];
+  it('saves under one user without dropping another user or legacy metadata', async () => {
+    const legacy = {
+      id: 'legacy-batch',
+      timestamp: '2026-06-24T12:00:00Z',
+      fileName: 'legacy.ics',
+      events: [],
+      blocks: [],
+      tasks: [],
+    };
     (RNFS.exists as jest.Mock).mockResolvedValueOnce(true);
-    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockData));
+    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify([
+      ownedBatch('user-b', 'batch-b'),
+      legacy,
+    ]));
     (RNFS.writeFile as jest.Mock).mockResolvedValueOnce(undefined);
 
-    const deleted = await importedBatchesStore.deleteImportedBatch('batch_1');
-
-    expect(deleted).toBeDefined();
-    expect(deleted!.id).toBe('batch_1');
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.any(String),
-      '[]',
-      'utf8'
+    await importedBatchesStore.saveImportedBatch(
+      'user-a', 'school.ics', ['ev-1'], ['bl-1'], ['tk-1'],
     );
+
+    const written = JSON.parse((RNFS.writeFile as jest.Mock).mock.calls[0][1]);
+    expect(written[0]).toMatchObject({
+      userId: 'user-a', fileName: 'school.ics',
+      events: ['ev-1'], blocks: ['bl-1'], tasks: ['tk-1'],
+    });
+    expect(written).toEqual(expect.arrayContaining([
+      ownedBatch('user-b', 'batch-b'),
+      legacy,
+    ]));
   });
 
-  test('should return null if deleting non-existent batch', async () => {
-    (RNFS.exists as jest.Mock).mockResolvedValueOnce(false); // getImportedBatches returns []
+  it('cannot delete another user batch even when its ID is known', async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValueOnce(true);
+    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify([
+      ownedBatch('user-a', 'batch-a'),
+      ownedBatch('user-b', 'batch-b'),
+    ]));
 
-    const deleted = await importedBatchesStore.deleteImportedBatch('non_existent');
-
-    expect(deleted).toBeNull();
+    await expect(importedBatchesStore.deleteImportedBatch('user-a', 'batch-b'))
+      .resolves.toBeNull();
     expect(RNFS.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('deletes only the matching user batch and preserves all other records', async () => {
+    const userA = ownedBatch('user-a', 'batch-a');
+    const userB = ownedBatch('user-b', 'batch-b');
+    (RNFS.exists as jest.Mock).mockResolvedValueOnce(true);
+    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify([userA, userB]));
+    (RNFS.writeFile as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await expect(importedBatchesStore.deleteImportedBatch('user-a', 'batch-a'))
+      .resolves.toEqual(userA);
+    expect(JSON.parse((RNFS.writeFile as jest.Mock).mock.calls[0][1])).toEqual([userB]);
   });
 });

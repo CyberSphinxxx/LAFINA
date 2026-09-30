@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.app.config import get_settings
-from backend.app.database import get_db
+from backend.app.database import get_db, set_transaction_rls_user
 from backend.app.models.account import Account
 from backend.app.models.session import AuthSession
 
@@ -46,6 +46,21 @@ def normalize_email(email: str) -> str:
 def hash_password(password: str) -> str:
     validate_password_strength(password)
     return ph.hash(password)
+
+_dummy_password_hash: str | None = None
+
+
+def dummy_password_hash() -> str:
+    """A real Argon2 hash of a random secret, for emails that have no account.
+
+    Checking the password against it costs as much as checking a real one, so
+    how long sign-in takes does not reveal whether the email is registered.
+    """
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = ph.hash(secrets.token_urlsafe(32))
+    return _dummy_password_hash
+
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
@@ -142,5 +157,7 @@ async def get_current_user_and_session(
 
     if session_expires_at < now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or revoked.")
+
+    await set_transaction_rls_user(db, account.id)
 
     return account, session

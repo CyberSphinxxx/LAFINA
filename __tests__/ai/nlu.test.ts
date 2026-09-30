@@ -4,6 +4,7 @@ import {
   parseNluJson,
   processCommand,
   normalizeTranscript,
+  resolveRelativeTime,
 } from '../../src/ai';
 import type { NluResult } from '../../src/ai';
 import { db, initDatabase, tasksStore, timeBlocksStore } from '../../src/storage';
@@ -292,6 +293,94 @@ describe('offline NLU scheduling', () => {
     expect(reply).toContain("Hey there! 👋 I'm LAFINA");
     expect(tasks).toHaveLength(0);
     expect(blocks).toHaveLength(0);
+  });
+
+  describe('relative time resolution', () => {
+    it('parses "15 minutes from now" to the reference time plus 15 minutes (not the 5pm default)', () => {
+      const result = createFallbackNluResult('set a schedule 15 minutes from now', MOCK_MONDAY_NOON);
+
+      expect(result).toMatchObject({
+        intent: 'schedule',
+        task: 'Scheduled Event',
+        date: '2026-07-06',
+        time: '12:15',
+        duration_minutes: null,
+        status: 'success',
+      });
+      // Regression guard: the original bug resolved this to the 17:00 default.
+      expect(result.time).not.toBe('17:00');
+    });
+
+    it('parses "in 15 minutes"', () => {
+      const result = createFallbackNluResult('in 15 minutes', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({ date: '2026-07-06', time: '12:15' });
+    });
+
+    it('parses "half an hour from now"', () => {
+      const result = createFallbackNluResult('half an hour from now', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({ date: '2026-07-06', time: '12:30' });
+    });
+
+    it('parses "in 2 hours"', () => {
+      const result = createFallbackNluResult('in 2 hours', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({ date: '2026-07-06', time: '14:00' });
+    });
+
+    it('parses "an hour from now"', () => {
+      const result = createFallbackNluResult('an hour from now', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({ date: '2026-07-06', time: '13:00' });
+    });
+
+    it('parses "2 hours later"', () => {
+      const result = createFallbackNluResult('2 hours later', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({ date: '2026-07-06', time: '14:00' });
+    });
+
+    it('keeps the relative phrase out of the task title', () => {
+      const result = createFallbackNluResult('schedule a meeting in 15 minutes with Yohan', MOCK_MONDAY_NOON);
+      expect(result).toMatchObject({
+        intent: 'schedule',
+        task: 'meeting with Yohan',
+        time: '12:15',
+      });
+    });
+
+    it('does not treat an unanchored duration ("for 2 hours") as a relative deadline', () => {
+      const result = createFallbackNluResult('study for 2 hours', MOCK_MONDAY_NOON);
+      expect(result.time).not.toBe('14:00');
+    });
+
+    it('rolls over midnight when the offset crosses into the next day', () => {
+      const reference = new Date(2026, 6, 6, 23, 50, 0);
+      expect(resolveRelativeTime('15 minutes from now', reference)).toEqual({
+        date: '2026-07-07',
+        time: '00:05',
+      });
+    });
+
+    it('spans a full day for "in 24 hours" landing on the same wall-clock time', () => {
+      const reference = new Date(2026, 6, 6, 12, 30, 0);
+      expect(resolveRelativeTime('in 24 hours', reference)).toEqual({
+        date: '2026-07-07',
+        time: '12:30',
+      });
+    });
+
+    it('preserves exact elapsed minutes across a DST transition (epoch arithmetic)', () => {
+      // 2026-03-08 01:30 sits inside the US "spring forward" window. A naive
+      // wall-clock "+N hours" implementation would drift; resolving via epoch
+      // millis must always yield exactly the requested real elapsed time. The
+      // delta assertion is timezone-agnostic (60 real minutes in every zone).
+      const reference = new Date(2026, 2, 8, 1, 30, 0);
+      const resolved = resolveRelativeTime('in 60 minutes', reference);
+      expect(resolved).not.toBeNull();
+
+      const [year, month, day] = resolved!.date.split('-').map(Number);
+      const [hours, minutes] = resolved!.time.split(':').map(Number);
+      const target = new Date(year, month - 1, day, hours, minutes, 0, 0);
+
+      expect(target.getTime() - reference.getTime()).toBe(60 * 60 * 1000);
+    });
   });
 
   describe('normalizeTranscript', () => {

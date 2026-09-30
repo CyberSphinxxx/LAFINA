@@ -5,11 +5,10 @@ import {
   TouchableOpacity,
   StyleSheet,
   Image,
-  StatusBar,
+  ScrollView,
 } from 'react-native';
-import { Colors, Fonts, Layout, Shadows } from '../theme';
+import { Fonts, Layout, Shadows } from '../theme';
 import { userStore } from '../../storage';
-import { useTheme } from '../contexts/ThemeContext';
 import { useThemedStyles } from '../theme/createThemedStyles';
 import type { ThemeColors } from '../contexts/ThemeContext';
 
@@ -19,13 +18,16 @@ interface WelcomeScreenProps {
   onNavigateToRegister: () => void;
 }
 
+/**
+ * The first screen when signed out. It sits on the Grainient backdrop
+ * (`AuthBackdrop`), so everything is on one card, as on the desktop app.
+ */
 export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   onGetStarted,
   onNavigateToLogin,
   onNavigateToRegister,
 }) => {
-  const { colors } = useTheme();
-  const themed = useThemedStyles((c) => getWelcomeThemedStyles(c));
+  const themed = useThemedStyles(getWelcomeThemedStyles);
 
   const handleGetStarted = () => {
     const guest = userStore.createGuestUser();
@@ -34,33 +36,28 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   };
 
   return (
-    <View style={[styles.container, themed.container]}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} />
-
-      {/* Branding Section */}
-      <View style={styles.brandSection}>
+    <ScrollView contentContainerStyle={styles.container} bounces={false}>
+      <View style={[styles.card, Shadows.card, themed.card]}>
+        {/* Branding */}
         <Image
           source={require('../../assets/lafina_default_logo.png')}
           style={styles.logo}
           resizeMode="contain"
+          accessibilityLabel="LAFINA"
         />
-        <Text style={[styles.tagline, themed.tagline]}>
-          Your Offline AI Scheduler
-        </Text>
+        <Text style={[styles.tagline, themed.tagline]}>Your Offline AI Scheduler</Text>
         <Text style={[styles.description, themed.description]}>
           Offline-first smart scheduling, voice notes, and calendar management — no account required.
         </Text>
-      </View>
 
-      {/* Action Buttons */}
-      <View style={styles.actionSection}>
+        {/* Actions */}
         <TouchableOpacity
-          style={[styles.primaryButton, Shadows.card]}
+          style={[styles.primaryButton, themed.primaryButton]}
           onPress={handleGetStarted}
           activeOpacity={0.8}
         >
-          <Text style={styles.primaryButtonText}>Get Started Free</Text>
-          <Text style={styles.primaryButtonSubtext}>No account needed</Text>
+          <Text style={[styles.primaryButtonText, themed.primaryButtonText]}>Get Started Free</Text>
+          <Text style={[styles.primaryButtonSubtext, themed.primaryButtonText]}>No account needed</Text>
         </TouchableOpacity>
 
         <View style={styles.dividerRow}>
@@ -74,48 +71,52 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
           onPress={onNavigateToRegister}
           activeOpacity={0.8}
         >
-          <Text style={[styles.secondaryButtonText, themed.secondaryButtonText]}>
-            Create Account
-          </Text>
+          <Text style={[styles.secondaryButtonText, themed.secondaryButtonText]}>Create Account</Text>
         </TouchableOpacity>
-      </View>
 
-      {/* Footer */}
-      <View style={styles.footer}>
-        <Text style={[styles.footerText, themed.footerText]}>Already have an account? </Text>
-        <TouchableOpacity onPress={onNavigateToLogin}>
-          <Text style={styles.loginLink}>Log In</Text>
-        </TouchableOpacity>
+        {/* Footer */}
+        <View style={styles.footer}>
+          <Text style={[styles.footerText, themed.footerText]}>Already have an account? </Text>
+          <TouchableOpacity onPress={onNavigateToLogin}>
+            <Text style={[styles.loginLink, themed.loginLink]}>Log In</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
+    </ScrollView>
   );
 };
 
 const getWelcomeThemedStyles = (colors: ThemeColors) => ({
-  container: { backgroundColor: colors.background },
+  card: { backgroundColor: colors.cardBg },
   tagline: { color: colors.textPrimary },
   description: { color: colors.textSecondary },
+  primaryButton: { backgroundColor: colors.blue },
+  primaryButtonText: { color: colors.white },
   dividerLine: { backgroundColor: colors.border },
-  dividerText: { color: colors.textMuted },
+  dividerText: { color: colors.textSecondary },
   secondaryButton: { borderColor: colors.border, backgroundColor: colors.cardBg },
   secondaryButtonText: { color: colors.textPrimary },
   footerText: { color: colors.textSecondary },
+  loginLink: { color: colors.blue },
 });
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: 'center',
     padding: 24,
   },
-  brandSection: {
+  card: {
+    borderRadius: Layout.borderRadiusCard,
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 24,
     alignItems: 'center',
-    marginBottom: 48,
   },
   logo: {
     width: 180,
     height: 80,
-    marginBottom: 16,
+    marginBottom: 12,
   },
   tagline: {
     fontFamily: Fonts.heading,
@@ -129,16 +130,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     lineHeight: 20,
-    paddingHorizontal: 16,
-  },
-  actionSection: {
-    width: '100%',
-    alignItems: 'center',
+    marginBottom: 28,
   },
   primaryButton: {
     width: '100%',
     height: 56,
-    backgroundColor: Colors.blue,
     borderRadius: Layout.borderRadiusButton,
     justifyContent: 'center',
     alignItems: 'center',
@@ -146,16 +142,14 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     fontFamily: Fonts.body,
-    color: Colors.textLight,
     fontWeight: 'bold',
     fontSize: 16,
   },
   primaryButtonSubtext: {
     fontFamily: Fonts.body,
-    color: Colors.textLight,
     fontSize: 11,
     marginTop: 2,
-    opacity: 0.8,
+    opacity: 0.9,
   },
   dividerRow: {
     flexDirection: 'row',
@@ -188,10 +182,7 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    position: 'absolute',
-    bottom: 48,
-    left: 24,
-    right: 24,
+    marginTop: 24,
   },
   footerText: {
     fontFamily: Fonts.body,
@@ -199,7 +190,6 @@ const styles = StyleSheet.create({
   },
   loginLink: {
     fontFamily: Fonts.body,
-    color: Colors.red,
     fontWeight: 'bold',
     fontSize: 14,
     textDecorationLine: 'underline',

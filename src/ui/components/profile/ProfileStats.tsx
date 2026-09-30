@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Fonts, Layout, Shadows } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Fonts, Layout, Shadows, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 
 interface ProfileStatsProps {
   completedTasksCount: number;
@@ -14,7 +14,7 @@ export const ProfileStats: React.FC<ProfileStatsProps> = ({
   notesCount,
   voiceCommandsCount,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   return (
     <View style={styles.statsRow}>
@@ -58,17 +58,14 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors } = useTheme();
-  return {
-    statCard: {
-      backgroundColor: colors.cardBg,
-    },
-    statVal: {
-      color: colors.textPrimary,
-    },
-    statLabel: {
-      color: colors.textSecondary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors) => ({
+  statCard: {
+    backgroundColor: colors.cardBg,
+  },
+  statVal: {
+    color: colors.textPrimary,
+  },
+  statLabel: {
+    color: colors.textSecondary,
+  },
+});

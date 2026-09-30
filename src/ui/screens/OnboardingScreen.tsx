@@ -47,7 +47,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
   const [longestGap, setLongestGap] = useState<LongestClassGap>('1 hour');
 
   const { colors } = useTheme();
-  const themed = useThemedStyles((c, d) => getOnboardThemedStyles(c, d));
+  const themed = useThemedStyles(getOnboardThemedStyles);
 
   const toggleStudyPeak = (value: StudyPeakHour) => {
     if (studyPeak.includes(value)) {

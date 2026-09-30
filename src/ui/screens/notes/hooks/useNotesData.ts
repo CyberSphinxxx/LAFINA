@@ -1,9 +1,19 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Alert, Animated, LayoutAnimation, UIManager } from 'react-native';
 import type { Note } from '../../../../storage';
-import { notesStore, tasksStore } from '../../../../storage';
+import { localSettingsStore, notesStore, tasksStore } from '../../../../storage';
 import { FilterType } from '../types';
-import { generateId } from '../../../../utils';
+import {
+  applyNoteFormat,
+  continueListOnNewline,
+  extractChecklistItems,
+  generateId,
+  isBodyEmpty,
+  isHtmlBody,
+  noteBodyToMarkdown,
+  toggleChecklistItem,
+} from '../../../../utils';
+import type { NoteFormat } from '../../../../utils';
 import { registerCustomCategoryColor } from '../../../theme/categoryColors';
 
 // Enable LayoutAnimation on Android
@@ -25,6 +35,20 @@ const swapAnimation = {
   },
 };
 
+/** Where the chosen note filter is kept between visits to the screen. */
+const NOTES_FILTER_KEY = 'notes.selectedFilter';
+const DEFAULT_FILTER: FilterType = 'All';
+/** Filters that are always offered, whatever categories the account has. */
+const BUILT_IN_FILTERS: readonly FilterType[] = [
+  'All',
+  'AI Transcribed',
+  'Pinned',
+  'Personal',
+  'Work',
+  'Health',
+  'Learning',
+];
+
 interface UseNotesDataOptions {
   userId: string;
   refreshTrigger: number;
@@ -37,7 +61,11 @@ export const useNotesData = (options: UseNotesDataOptions) => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchActive, setSearchActive] = useState(false);
-  const [selectedFilter, setSelectedFilter] = useState<FilterType>('All');
+  // Switching tabs unmounts this screen, so the chosen filter is remembered on
+  // the device rather than in state that goes with it.
+  const [selectedFilter, setSelectedFilterState] = useState<FilterType>(
+    () => localSettingsStore.get(userId, NOTES_FILTER_KEY, DEFAULT_FILTER) ?? DEFAULT_FILTER
+  );
   const [isGridView, setIsGridView] = useState(true);
 
   // Editor state
@@ -70,6 +98,14 @@ export const useNotesData = (options: UseNotesDataOptions) => {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiActionType, setAiActionType] = useState('');
 
+  const setSelectedFilter = useCallback(
+    (filter: FilterType) => {
+      setSelectedFilterState(filter);
+      localSettingsStore.set(userId, NOTES_FILTER_KEY, filter);
+    },
+    [userId]
+  );
+
   const loadNotes = useCallback(() => {
     const data = notesStore.getAll(userId);
     setNotes(data);
@@ -77,7 +113,13 @@ export const useNotesData = (options: UseNotesDataOptions) => {
     cats.forEach((c) => {
       registerCustomCategoryColor(c.name, c.color);
     });
-    setCustomCategories(cats.map((c) => c.name));
+    const names = cats.map((c) => c.name);
+    setCustomCategories(names);
+    // A remembered filter whose category has since been deleted would leave the
+    // screen empty with no chip lit to explain why, so fall back to All.
+    setSelectedFilterState((current) =>
+      BUILT_IN_FILTERS.includes(current) || names.includes(current) ? current : DEFAULT_FILTER
+    );
   }, [userId]);
 
   const addCategory = useCallback((name: string, color: string) => {
@@ -225,44 +267,86 @@ export const useNotesData = (options: UseNotesDataOptions) => {
 
   const openEditNote = useCallback((note: Note) => {
     if (isDragging) return;
+    // A note last saved on desktop is HTML; edit it in the mobile dialect.
+    const body = noteBodyToMarkdown(note.body);
     setEditingNote(note);
     setNoteTitle(note.title);
-    setNoteBody(note.body);
+    setNoteBody(body);
     setNoteCategory(note.category);
     setNoteTags(note.tags);
     setIsPinned(note.isPinned);
     setIsVoice(note.isVoiceTranscribed);
     setImageUri(note.imageUri || null);
-    setSelection({ start: note.body.length, end: note.body.length });
+    setSelection({ start: body.length, end: body.length });
     setEditorVisible(true);
   }, [isDragging]);
 
   const closeEditor = useCallback(() => setEditorVisible(false), []);
 
-  const applyFormatting = useCallback((type: 'bold' | 'italic' | 'checklist') => {
-    const { start, end } = selection;
-    const before = noteBody.substring(0, start);
-    const selected = noteBody.substring(start, end);
-    const after = noteBody.substring(end);
-    let newText = '';
-    let newCursorPos = start;
+  const applyFormatting = useCallback(
+    (type: NoteFormat) => {
+      const edit = applyNoteFormat(noteBody, selection, type);
+      setNoteBody(edit.body);
+      setSelection(edit.selection);
+    },
+    [noteBody, selection]
+  );
 
-    if (type === 'bold') {
-      newText = start === end ? `${before}****${after}` : `${before}**${selected}**${after}`;
-      newCursorPos = start === end ? start + 2 : start + 2 + selected.length + 2;
-    } else if (type === 'italic') {
-      newText = start === end ? `${before}**${after}` : `${before}*${selected}*${after}`;
-      newCursorPos = start === end ? start + 1 : start + 1 + selected.length + 1;
-    } else if (type === 'checklist') {
-      const needsNewline = start > 0 && noteBody.charAt(start - 1) !== '\n';
-      const prefix = needsNewline ? '\n- [ ] ' : '- [ ] ';
-      newText = `${before}${prefix}${selected}${after}`;
-      newCursorPos = start + prefix.length + selected.length;
-    }
+  /**
+   * Body edits go through here so a list can carry itself on: pressing Enter
+   * at the end of an item starts the next one, as it does on the desktop.
+   */
+  const changeBody = useCallback(
+    (next: string) => {
+      const carried = continueListOnNewline(noteBody, next);
+      if (!carried) {
+        setNoteBody(next);
+        return;
+      }
+      setNoteBody(carried.body);
+      setSelection(carried.selection);
+    },
+    [noteBody]
+  );
 
-    setNoteBody(newText);
-    setSelection({ start: newCursorPos, end: newCursorPos });
-  }, [noteBody, selection]);
+  /**
+   * Ticks the checklist item at `index` in the note being edited.
+   *
+   * The stored body is flipped alongside the draft. Both hold the same items
+   * in the same order, so the two stay in step — and `saveNote` can still see
+   * that a desktop document was only ticked, not rewritten, and keep its HTML.
+   */
+  const toggleEditorChecklist = useCallback((index: number) => {
+    setEditingNote((note) => {
+      if (!note) return note;
+      const body = toggleChecklistItem(note.body, index);
+      return body === note.body ? note : { ...note, body };
+    });
+    setNoteBody((previous) => toggleChecklistItem(previous, index));
+  }, []);
+
+  /**
+   * Ticks a to-do straight from its card. The stored body is updated rather
+   * than the draft, so a desktop note keeps the formatting mobile cannot draw.
+   */
+  const toggleNoteChecklist = useCallback(
+    (note: Note, index: number) => {
+      const body = toggleChecklistItem(note.body, index);
+      if (body === note.body) return;
+      notesStore.update({
+        id: note.id,
+        title: note.title,
+        body,
+        category: note.category,
+        isPinned: note.isPinned,
+        tags: note.tags,
+        imageUri: note.imageUri,
+      });
+      loadNotes();
+      onRefresh();
+    },
+    [loadNotes, onRefresh]
+  );
 
   const saveNote = useCallback(() => {
     if (!noteTitle.trim() && !noteBody.trim() && !imageUri) {
@@ -272,10 +356,14 @@ export const useNotesData = (options: UseNotesDataOptions) => {
     const titleStr = noteTitle.trim() || 'Untitled Note';
 
     if (editingNote) {
+      // Unchanged text keeps the desktop's HTML, and with it the formatting
+      // this editor can't show (colours, highlights, images).
+      const bodyUnchanged =
+        isHtmlBody(editingNote.body) && noteBody === noteBodyToMarkdown(editingNote.body);
       notesStore.update({
         id: editingNote.id,
         title: titleStr,
-        body: noteBody,
+        body: bodyUnchanged ? editingNote.body : noteBody,
         category: noteCategory,
         isPinned: isPinned,
         tags: noteTags,
@@ -315,7 +403,7 @@ export const useNotesData = (options: UseNotesDataOptions) => {
   const getFilteredNotes = useCallback(() => {
     return notes.filter((n) => {
       const matchesSearch = n.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        n.body.toLowerCase().includes(searchQuery.toLowerCase());
+        noteBodyToMarkdown(n.body).toLowerCase().includes(searchQuery.toLowerCase());
       if (!matchesSearch) return false;
       if (selectedFilter === 'All') return true;
       if (selectedFilter === 'Pinned') return n.isPinned;
@@ -325,8 +413,8 @@ export const useNotesData = (options: UseNotesDataOptions) => {
   }, [notes, searchQuery, selectedFilter]);
 
   const triggerAiAction = useCallback((action: 'summarize' | 'clean' | 'tasks') => {
-    if (!noteBody.trim()) {
-      Alert.alert('Error', 'Please enter some text in the note body first.');
+    if (isBodyEmpty(noteBody)) {
+      Alert.alert('Nothing to work with', 'Write something in the note body first.');
       return;
     }
     setAiActionType(action);
@@ -335,43 +423,66 @@ export const useNotesData = (options: UseNotesDataOptions) => {
     setTimeout(() => {
       setAiLoading(false);
       if (action === 'summarize') {
-        setNoteBody((prev) => prev + `\n\n--- AI SUMMARY ---\n• Key focus of this note centers on productivity details.\n• Critical path action items should be extracted and scheduled.\n------------------`);
+        // Written in the dialect, so the desktop reads it back as a heading
+        // and a list rather than as three lines of punctuation.
+        setNoteBody(
+          (prev) =>
+            `${prev}\n\n### AI summary\n` +
+            '- Key focus of this note centers on productivity details.\n' +
+            '- Critical path action items should be extracted and scheduled.'
+        );
       } else if (action === 'clean') {
-        setNoteBody((prev) => {
-          let cleaned = prev.replace(/\s+/g, ' ').trim();
-          cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-          return cleaned;
-        });
-        Alert.alert('AI Clean Up', 'Typographical spacing and layout have been refined.');
+        // Only spacing is tidied. Collapsing every run of whitespace, as this
+        // used to, ran the whole note onto one line and destroyed its lists.
+        setNoteBody((prev) =>
+          prev
+            .split('\n')
+            .map((line) => line.replace(/[ \t]+$/, ''))
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+        );
+        Alert.alert('AI Clean Up', 'Empty blocks were collapsed and spacing was tidied.');
       } else if (action === 'tasks') {
-        const lines = noteBody.split('\n');
-        let taskCount = 0;
-        lines.forEach((line) => {
-          const cleanedLine = line.replace(/[-*]\s*\[\s*\]/g, '').trim();
-          if (cleanedLine.length > 5) {
-            tasksStore.insertTask({
-              id: generateId('task'),
-              userId,
-              title: cleanedLine,
-              dueDate: new Date().toISOString().split('T')[0],
-              dueTime: '09:00',
-              isCompleted: false,
-              priority: 'Medium',
-              category: noteCategory,
-              notes: 'Extracted from note: ' + noteTitle,
-            });
-            taskCount++;
-          }
+        // To-dos still to do come first, as on the desktop; only a note with
+        // no checklist at all falls back to reading its prose.
+        const checklist = extractChecklistItems(noteBody).filter((item) => !item.done);
+        const candidates =
+          checklist.length > 0
+            ? checklist.map((item) => item.text)
+            : noteBodyToMarkdown(noteBody)
+                .split('\n')
+                .map((line) => line.replace(/^[-*#>\s]+/, '').trim())
+                .filter((line) => line.length > 5);
+
+        const today = new Date().toISOString().split('T')[0];
+        candidates.forEach((title) => {
+          tasksStore.insertTask({
+            id: generateId('task'),
+            userId,
+            title,
+            dueDate: today,
+            dueTime: '09:00',
+            isCompleted: false,
+            priority: 'Medium',
+            category: noteCategory,
+            notes: `Extracted from note: ${noteTitle}`,
+          });
         });
-        if (taskCount > 0) {
-          Alert.alert('AI Task Extractor', `Successfully created ${taskCount} tasks in your Schedule!`);
-          onRefresh();
+
+        if (candidates.length > 0) {
+          Alert.alert(
+            'AI Task Extractor',
+            `Successfully created ${candidates.length} task${
+              candidates.length === 1 ? '' : 's'
+            } in your Schedule!`
+          );
         } else {
           tasksStore.insertTask({
             id: generateId('task'),
             userId,
-            title: noteTitle,
-            dueDate: new Date().toISOString().split('T')[0],
+            title: noteTitle || 'Untitled Note',
+            dueDate: today,
             dueTime: '09:00',
             isCompleted: false,
             priority: 'Medium',
@@ -379,8 +490,8 @@ export const useNotesData = (options: UseNotesDataOptions) => {
             notes: noteBody,
           });
           Alert.alert('AI Task Extractor', `Created 1 task based on note: "${noteTitle}".`);
-          onRefresh();
         }
+        onRefresh();
       }
     }, 1500);
   }, [noteBody, noteTitle, noteCategory, userId, onRefresh]);
@@ -425,7 +536,8 @@ export const useNotesData = (options: UseNotesDataOptions) => {
     // Actions
     loadNotes, onCardLayout, handleDragStart, handleDragMove, handleDragRelease,
     openNewNote, openEditNote, closeEditor,
-    applyFormatting, saveNote, deleteNote,
+    applyFormatting, changeBody, toggleEditorChecklist, toggleNoteChecklist,
+    saveNote, deleteNote,
     triggerAiAction, addCategory, deleteCategory, updateCategory,
   };
 };

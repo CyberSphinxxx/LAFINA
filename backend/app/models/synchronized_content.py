@@ -84,3 +84,58 @@ class CustomCategoriesSync(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class PomodoroSettingsSync(Base):
+    __tablename__ = "pomodoro_settings_sync"
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    change_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class PomodoroSessionsSync(Base):
+    __tablename__ = "pomodoro_sessions_sync"
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    change_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class FlashcardDecksSync(Base):
+    __tablename__ = "flashcard_decks_sync"
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    change_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class StudySummariesSync(Base):
+    __tablename__ = "study_summaries_sync"
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    change_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class RecordedMeetingsSync(Base):
+    __tablename__ = "recorded_meetings_sync"
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    change_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

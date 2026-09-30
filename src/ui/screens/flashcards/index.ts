@@ -1,0 +1,1 @@
+export { FlashcardsScreen } from './FlashcardsScreen';

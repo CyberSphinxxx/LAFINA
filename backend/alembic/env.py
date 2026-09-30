@@ -1,5 +1,11 @@
 import asyncio
+import os
+import sys
 from logging.config import fileConfig
+
+# Ensure workspace root is on sys.path when running alembic CLI
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config

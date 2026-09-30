@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Modal, TextInput, TouchableOpacity, Platform } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { Colors, Fonts, Shadows } from '../../theme';
+import { Colors, Fonts, Shadows, useThemedStyles } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 import { TimeBlock } from '../../../storage/timeBlocksStore';
 
 interface TimeBlockModalProps {
@@ -79,7 +80,7 @@ export const TimeBlockModal: React.FC<TimeBlockModalProps> = ({
   timeFormat24h,
 }) => {
   const { isDarkMode } = useTheme();
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   // Local state for native time picker visibility
   const [showStartPicker, setShowStartPicker] = useState(false);
@@ -698,111 +699,108 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors, isDarkMode } = useTheme();
-  return {
-    modalContent: {
-      backgroundColor: colors.cardBg,
-    },
-    modalHeaderTitle: {
-      color: colors.textPrimary,
-    },
-    modalInput: {
-      borderColor: colors.border,
-      color: colors.textPrimary,
-      backgroundColor: colors.inputBg,
-    },
-    timeInputLabel: {
-      color: colors.textSecondary,
-    },
-    timePickerBtn: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    timePickerBtnText: {
-      color: colors.textPrimary,
-    },
-    categoryChip: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    categoryChipActive: {
-      backgroundColor: Colors.red,
-      borderColor: Colors.red,
-    },
-    categoryChipText: {
-      color: colors.textSecondary,
-    },
-    categoryChipTextActive: {
-      color: '#FFFFFF',
-    },
-    colorBubble: {
-      borderColor: isDarkMode ? '#121212' : '#E0E0E0',
-    },
-    colorBubbleActive: {
-      borderColor: colors.textPrimary,
-    },
-    modalBtn: {
-      backgroundColor: colors.inputBg,
-    },
-    cancelBtn: {
-      borderColor: colors.border,
-      backgroundColor: 'transparent',
-    },
-    modalBtnTextDark: {
-      color: colors.textPrimary,
-    },
-    sectionLabel: {
-      color: colors.textSecondary,
-    },
-    freqBtn: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    freqBtnActive: {
-      backgroundColor: Colors.red,
-      borderColor: Colors.red,
-    },
-    freqBtnText: {
-      color: colors.textSecondary,
-    },
-    freqBtnTextActive: {
-      color: '#FFFFFF',
-    },
-    recurrenceDetails: {
-      borderColor: colors.border,
-      backgroundColor: colors.cardBg,
-    },
-    detailLabel: {
-      color: colors.textPrimary,
-    },
-    detailInput: {
-      borderColor: colors.border,
-      color: colors.textPrimary,
-      backgroundColor: colors.inputBg,
-    },
-    dayBubble: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    dayBubbleText: {
-      color: colors.textSecondary,
-    },
-    dayBubbleTextActive: {
-      color: '#FFFFFF',
-    },
-    endTypeBtn: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    endTypeBtnText: {
-      color: colors.textSecondary,
-    },
-    endTypeBtnTextActive: {
-      color: '#FFFFFF',
-    },
-    dateSelectorBtnText: {
-      color: colors.textPrimary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
+  modalContent: {
+    backgroundColor: colors.cardBg,
+  },
+  modalHeaderTitle: {
+    color: colors.textPrimary,
+  },
+  modalInput: {
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    backgroundColor: colors.inputBg,
+  },
+  timeInputLabel: {
+    color: colors.textSecondary,
+  },
+  timePickerBtn: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  timePickerBtnText: {
+    color: colors.textPrimary,
+  },
+  categoryChip: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  categoryChipActive: {
+    backgroundColor: Colors.red,
+    borderColor: Colors.red,
+  },
+  categoryChipText: {
+    color: colors.textSecondary,
+  },
+  categoryChipTextActive: {
+    color: colors.white,
+  },
+  colorBubble: {
+    borderColor: isDarkMode ? '#121212' : '#E0E0E0',
+  },
+  colorBubbleActive: {
+    borderColor: colors.textPrimary,
+  },
+  modalBtn: {
+    backgroundColor: colors.inputBg,
+  },
+  cancelBtn: {
+    borderColor: colors.border,
+    backgroundColor: 'transparent',
+  },
+  modalBtnTextDark: {
+    color: colors.textPrimary,
+  },
+  sectionLabel: {
+    color: colors.textSecondary,
+  },
+  freqBtn: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  freqBtnActive: {
+    backgroundColor: Colors.red,
+    borderColor: Colors.red,
+  },
+  freqBtnText: {
+    color: colors.textSecondary,
+  },
+  freqBtnTextActive: {
+    color: colors.white,
+  },
+  recurrenceDetails: {
+    borderColor: colors.border,
+    backgroundColor: colors.cardBg,
+  },
+  detailLabel: {
+    color: colors.textPrimary,
+  },
+  detailInput: {
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    backgroundColor: colors.inputBg,
+  },
+  dayBubble: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  dayBubbleText: {
+    color: colors.textSecondary,
+  },
+  dayBubbleTextActive: {
+    color: colors.white,
+  },
+  endTypeBtn: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  endTypeBtnText: {
+    color: colors.textSecondary,
+  },
+  endTypeBtnTextActive: {
+    color: colors.white,
+  },
+  dateSelectorBtnText: {
+    color: colors.textPrimary,
+  },
+});

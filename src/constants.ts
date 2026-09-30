@@ -7,8 +7,6 @@
 // Timing Constants
 // ═══════════════════════════════════════════════════════════
 
-/** Splash screen display delay (ms) before transitioning to main app */
-export const SPLASH_DELAY_MS = 2200;
 
 /** Artificial processing delay (ms) for AI action feedback in UI */
 export const AI_PROCESSING_DELAY_MS = 600;

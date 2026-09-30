@@ -30,6 +30,7 @@ export const buildNluPrompt = (
     'Use duration_minutes only when the user requested a time block, class, study session, meeting, or other blocked calendar span.',
     'Normalize compact clock text: 415pm means 16:15 and 300pm means 15:00.',
     'Resolve an explicit month and day, such as July 15, to an ISO local calendar date.',
+    'Resolve relative times such as "in 15 minutes", "15 minutes from now", or "half an hour from now" to the concrete HH:MM time and, when the offset crosses midnight, the correct ISO date.',
     'The task must contain only the meaningful title, never command words, dates, times, or isolated digits.',
     'Use null for missing task, date, time, or duration_minutes values.',
     'If the request is ambiguous, use status "pending" and ask a short clarification in reply.',

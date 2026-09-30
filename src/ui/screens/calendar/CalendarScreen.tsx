@@ -14,13 +14,18 @@ import { getCategoryColor, registerCustomCategoryColor } from '../../theme/categ
 import { useCalendarData } from './hooks/useCalendarData';
 import { useTimeBlockModal } from './hooks/useTimeBlockModal';
 import { useScheduleItemModal } from './hooks/useScheduleItemModal';
-import { WeekView, MonthView, DayView, AddBlockModal, AddTaskEventModal } from './components';
+import { WeekView, MonthView, AddBlockModal, AddTaskEventModal } from './components';
 import { NoteEditor } from '../notes/components/NoteEditor';
 import { getHeaderTitle } from './utils/calendarHelpers';
 import { CalendarScreenProps, ViewMode } from './types';
 import { tasksStore, notesStore } from '../../../storage';
 import type { Task } from '../../../storage';
-import { generateId } from '../../../utils';
+import {
+  applyNoteFormat,
+  continueListOnNewline,
+  generateId,
+  toggleChecklistItem,
+} from '../../../utils';
 import { CalendarLayersModal } from '../../components/calendar/CalendarLayersModal';
 
 /** Renders the offline calendar workspace and its local scheduling actions. */
@@ -146,7 +151,7 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Shared date header for month, week, and day views. */}
+      {/* Shared date header for the month and week views. */}
         <View style={styles.topHeaderRow}>
           <TouchableOpacity
             onPress={() => calendar.setShowDatePicker(true)}
@@ -218,7 +223,7 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
       {/* View mode and clearly labeled local calendar actions. */}
       <View style={styles.subHeaderContainer}>
         <View style={[styles.toggleRow, { backgroundColor: colors.divider }]}>
-          {(['month', 'week', 'day'] as ViewMode[]).map((mode) => (
+          {(['month', 'week'] as ViewMode[]).map((mode) => (
             <TouchableOpacity
               key={mode}
               style={[
@@ -299,21 +304,6 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
             onSwipeRight={calendar.handlePrevPress}
           />
         )}
-        {calendar.viewMode === 'day' && (
-          <DayView
-            targetDate={calendar.selectedDate}
-            blocks={calendar.blocks}
-            allTasks={calendar.allTasks}
-            allEvents={calendar.allEvents}
-            timeFormat24h={calendar.timeFormat24h}
-            onEditTask={(task) => scheduleModal.openEdit(task, 'task')}
-            onEditEvent={(event) => scheduleModal.openEdit(event, 'event')}
-            onEditBlock={(block) => blockModal.openEditBlock(block)}
-            onToggleTask={toggleTaskCompletion}
-            onAddBlock={blockModal.openNewBlock}
-            getCategoryColor={getCategoryColor}
-          />
-        )}
         {calendar.viewMode === 'week' && (
           <WeekView
             calendar={calendar}
@@ -325,6 +315,8 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
             onEditEvent={(event) => scheduleModal.openEdit(event, 'event')}
             onEditBlock={(block) => blockModal.openEditBlock(block)}
             onToggleTask={toggleTaskCompletion}
+            onAddBlock={blockModal.openNewBlock}
+            getCategoryColor={getCategoryColor}
           />
         )}
       </View>
@@ -428,7 +420,11 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
         aiLoading={false}
         aiActionType=""
         onTitleChange={setNoteTitle}
-        onBodyChange={setNoteBody}
+        onBodyChange={(next) => {
+          const carried = continueListOnNewline(noteBody, next);
+          setNoteBody(carried ? carried.body : next);
+          if (carried) setNoteSelection(carried.selection);
+        }}
         onCategoryChange={setNoteCategory}
         onPinToggle={() => setIsPinned(p => !p)}
         onImageUriChange={() => {}}
@@ -437,29 +433,11 @@ export const CalendarScreen: React.FC<CalendarScreenProps> = ({
         onSave={handleSaveNote}
         onDelete={() => {}}
         onFormatting={(type) => {
-          const { start, end } = noteSelection;
-          const before = noteBody.substring(0, start);
-          const selected = noteBody.substring(start, end);
-          const after = noteBody.substring(end);
-          let newText = '';
-          let newCursorPos = start;
-
-          if (type === 'bold') {
-            newText = start === end ? `${before}****${after}` : `${before}**${selected}**${after}`;
-            newCursorPos = start === end ? start + 2 : start + 2 + selected.length + 2;
-          } else if (type === 'italic') {
-            newText = start === end ? `${before}**${after}` : `${before}*${selected}*${after}`;
-            newCursorPos = start === end ? start + 1 : start + 1 + selected.length + 1;
-          } else if (type === 'checklist') {
-            const needsNewline = start > 0 && noteBody.charAt(start - 1) !== '\n';
-            const prefix = needsNewline ? '\n- [ ] ' : '- [ ] ';
-            newText = `${before}${prefix}${selected}${after}`;
-            newCursorPos = start + prefix.length + selected.length;
-          }
-
-          setNoteBody(newText);
-          setNoteSelection({ start: newCursorPos, end: newCursorPos });
+          const edit = applyNoteFormat(noteBody, noteSelection, type);
+          setNoteBody(edit.body);
+          setNoteSelection(edit.selection);
         }}
+        onToggleChecklist={(index) => setNoteBody(toggleChecklistItem(noteBody, index))}
         onAttachImage={() => {}}
         onRemoveImage={() => {}}
         onAiAction={() => {}}

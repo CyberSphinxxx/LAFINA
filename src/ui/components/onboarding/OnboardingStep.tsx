@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Colors, Fonts, Layout, Shadows } from '../../theme';
+import { Colors, Fonts, Layout, Shadows, useThemedStyles } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 import { BookOpen, Clock, Activity, Award } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import type { LongestClassGap, SnoozeTendency, StudyPeakHour, WeeklyClassCount } from '../../../storage';
@@ -76,7 +77,7 @@ export const OnboardingStep: React.FC<OnboardingStepProps> = ({
   setLongestGap,
 }) => {
   const { colors } = useTheme();
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   const [showWakePicker, setShowWakePicker] = useState(false);
   const [showSleepPicker, setShowSleepPicker] = useState(false);
@@ -469,37 +470,34 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors, isDarkMode } = useTheme();
-  return {
-    stepTitle: {
-      color: colors.textPrimary,
-    },
-    stepDesc: {
-      color: colors.textSecondary,
-    },
-    inputLabel: {
-      color: colors.textPrimary,
-    },
-    chip: {
-      backgroundColor: colors.inputBg,
-      borderColor: colors.border,
-    },
-    chipText: {
-      color: colors.textPrimary,
-    },
-    iconCircle: {
-      backgroundColor: isDarkMode ? 'rgba(46, 204, 113, 0.15)' : '#E8F8F0',
-    },
-    summaryCard: {
-      backgroundColor: colors.inputBg,
-      borderColor: colors.border,
-    },
-    summaryTitle: {
-      color: colors.textPrimary,
-    },
-    summaryItem: {
-      color: colors.textPrimary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
+  stepTitle: {
+    color: colors.textPrimary,
+  },
+  stepDesc: {
+    color: colors.textSecondary,
+  },
+  inputLabel: {
+    color: colors.textPrimary,
+  },
+  chip: {
+    backgroundColor: colors.inputBg,
+    borderColor: colors.border,
+  },
+  chipText: {
+    color: colors.textPrimary,
+  },
+  iconCircle: {
+    backgroundColor: isDarkMode ? 'rgba(46, 204, 113, 0.15)' : '#E8F8F0',
+  },
+  summaryCard: {
+    backgroundColor: colors.inputBg,
+    borderColor: colors.border,
+  },
+  summaryTitle: {
+    color: colors.textPrimary,
+  },
+  summaryItem: {
+    color: colors.textPrimary,
+  },
+});

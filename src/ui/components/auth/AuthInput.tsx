@@ -8,8 +8,9 @@ import {
   KeyboardTypeOptions,
 } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
-import { Fonts, Layout } from '../../theme';
+import { Fonts, Layout, useThemedStyles } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 
 interface AuthInputProps {
   label: string;
@@ -41,7 +42,7 @@ export const AuthInput: React.FC<AuthInputProps> = ({
   onPasswordToggle,
 }) => {
   const { colors } = useTheme();
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   return (
     <View>
@@ -104,18 +105,15 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors } = useTheme();
-  return {
-    fieldLabel: {
-      color: colors.textPrimary,
-    },
-    inputContainer: {
-      borderColor: colors.border,
-      backgroundColor: colors.inputBg,
-    },
-    input: {
-      color: colors.textPrimary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors) => ({
+  fieldLabel: {
+    color: colors.textPrimary,
+  },
+  inputContainer: {
+    borderColor: colors.border,
+    backgroundColor: colors.inputBg,
+  },
+  input: {
+    color: colors.textPrimary,
+  },
+});

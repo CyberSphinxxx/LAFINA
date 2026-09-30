@@ -9,11 +9,13 @@ import {
   Animated,
   GestureResponderHandlers,
 } from 'react-native';
-import { Pin, GripVertical } from 'lucide-react-native';
+import { CheckSquare, GripVertical, Pin } from 'lucide-react-native';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { Shadows } from '../../../theme';
 import { getCategoryColor } from '../../../theme/categoryColors';
 import type { Note } from '../../../../storage';
+import { checklistStats } from '../../../../utils';
+import { NoteBody } from './NoteBody';
 
 const lafinaDefaultLogo = require('../../../../assets/lafina_default_logo.png');
 const lafinaLogoGradient = require('../../../../assets/lafina_logo_gradient_bg.png');
@@ -25,45 +27,6 @@ export const getLocalImage = (uri: string | null) => {
   if (uri === 'lafina_logo_gradient_bg') return lafinaLogoGradient;
   if (uri === 'spash_icon') return splashIcon;
   return { uri };
-};
-
-export const renderMarkdown = (text: string, colors: any): React.ReactNode => {
-  if (!text) return null;
-  const lines = text.split('\n');
-  return lines.map((line, lineIndex) => {
-    let isChecklist = false;
-    let isCompleted = false;
-    let remainingLine = line;
-
-    if (line.startsWith('- [ ] ')) {
-      isChecklist = true;
-      remainingLine = line.slice(6);
-    } else if (line.startsWith('- [x] ')) {
-      isChecklist = true;
-      isCompleted = true;
-      remainingLine = line.slice(6);
-    }
-
-    const regex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
-    const parts = remainingLine.split(regex);
-    const inlineElements = parts.map((part, partIndex) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <Text key={partIndex} style={{ fontWeight: 'bold' }}>{part.slice(2, -2)}</Text>;
-      }
-      if (part.startsWith('*') && part.endsWith('*')) {
-        return <Text key={partIndex} style={{ fontStyle: 'italic' }}>{part.slice(1, -1)}</Text>;
-      }
-      return part;
-    });
-
-    return (
-      <Text key={lineIndex} style={isCompleted ? { textDecorationLine: 'line-through', color: colors.textMuted } : undefined}>
-        {isChecklist && <Text style={{ color: isCompleted ? colors.success : colors.red, fontWeight: 'bold' }}>{isCompleted ? '☑ ' : '☐ '}</Text>}
-        {inlineElements}
-        {lineIndex < lines.length - 1 ? '\n' : ''}
-      </Text>
-    );
-  });
 };
 
 const dragHandleStyles = StyleSheet.create({
@@ -81,13 +44,26 @@ interface NoteCardBaseProps {
   dragX: Animated.Value;
   dragY: Animated.Value;
   onLayout: (id: string, layout: { x: number; y: number; width: number; height: number }) => void;
+  /** Ticks a to-do from the card, as the desktop's cards do. */
+  onToggleChecklist: (note: Note, index: number) => void;
 }
 
 export const NoteCardBase: React.FC<NoteCardBaseProps> = ({
   item, isGridView, onPress, isActive, canDrag, panHandlers,
-  dragX, dragY, onLayout,
+  dragX, dragY, onLayout, onToggleChecklist,
 }) => {
   const { colors } = useTheme();
+  const checklist = checklistStats(item.body);
+  const toggle = (index: number) => onToggleChecklist(item, index);
+
+  const progressBadge = checklist.total > 0 && (
+    <View style={[styles.checklistBadge, { backgroundColor: colors.inputBg }]}>
+      <CheckSquare size={9} color={checklist.done === checklist.total ? colors.success : colors.textMuted} />
+      <Text style={[styles.checklistBadgeText, { color: colors.textMuted }]}>
+        {`${checklist.done}/${checklist.total}`}
+      </Text>
+    </View>
+  );
 
   const cardStyle = isActive
     ? {
@@ -128,13 +104,19 @@ export const NoteCardBase: React.FC<NoteCardBaseProps> = ({
               {canDrag && <View {...panHandlers} style={dragHandleStyles.gridHandle}><GripVertical size={14} color={colors.iconMuted} /></View>}
               {item.isPinned && <Pin size={12} color={colors.red} style={{ transform: [{ rotate: '45deg' }] }} />}
             </View>
-            <Text style={[styles.noteCardBody, { color: colors.textSecondary }]} numberOfLines={item.imageUri ? 2 : 4}>
-              {renderMarkdown(item.body, colors)}
-            </Text>
+            <View style={styles.noteCardBody}>
+              <NoteBody
+                body={item.body}
+                compact
+                maxBlocks={item.imageUri ? 3 : 6}
+                onToggleChecklist={toggle}
+              />
+            </View>
             <View style={styles.cardFooter}>
               <Text style={[styles.cardDate, { color: colors.textMuted }]}>
                 {new Date(item.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </Text>
+              {progressBadge}
               {item.isVoiceTranscribed && (
                 <View style={[styles.voiceBadge, { backgroundColor: 'rgba(91, 91, 255, 0.15)' }]}>
                   <Text style={[styles.voiceBadgeText, { color: colors.blue }]}>AI</Text>
@@ -152,13 +134,19 @@ export const NoteCardBase: React.FC<NoteCardBaseProps> = ({
                   <Text style={[styles.noteCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>{item.title}</Text>
                   {item.isPinned && <Pin size={12} color={colors.red} style={{ transform: [{ rotate: '45deg' }] }} />}
                 </View>
-                <Text style={[styles.noteCardBody, { color: colors.textSecondary }]} numberOfLines={2}>
-                  {renderMarkdown(item.body, colors)}
-                </Text>
+                <View style={styles.noteCardBody}>
+                  <NoteBody
+                    body={item.body}
+                    compact
+                    maxBlocks={4}
+                    onToggleChecklist={toggle}
+                  />
+                </View>
                 <View style={styles.cardFooter}>
                   <Text style={[styles.cardDate, { color: colors.textMuted }]}>
                     {new Date(item.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </Text>
+                  {progressBadge}
                   {item.isVoiceTranscribed && (
                     <View style={[styles.voiceBadge, { backgroundColor: 'rgba(91, 91, 255, 0.15)' }]}>
                       <Text style={[styles.voiceBadgeText, { color: colors.blue }]}>AI Transcribed</Text>
@@ -195,11 +183,13 @@ interface NoteCardWithDragProps {
   onDragMove: (dx: number, dy: number) => void;
   onDragRelease: () => void;
   onLayout: (id: string, layout: { x: number; y: number; width: number; height: number }) => void;
+  onToggleChecklist: (note: Note, index: number) => void;
 }
 
 export const NoteCardWithDrag = React.memo<NoteCardWithDragProps>(({
   item, index: _index, isGridView, isActive, canDrag,
   dragX, dragY, onPress, onDragStart, onDragMove, onDragRelease, onLayout,
+  onToggleChecklist,
 }) => {
   const panRef = useRef<ReturnType<typeof PanResponder.create> | null>(null);
   const itemRef = useRef(item);
@@ -248,6 +238,7 @@ export const NoteCardWithDrag = React.memo<NoteCardWithDragProps>(({
       dragX={dragX}
       dragY={dragY}
       onLayout={onLayout}
+      onToggleChecklist={onToggleChecklist}
     />
   );
 }, (prev, next) => {
@@ -263,7 +254,9 @@ const styles = StyleSheet.create({
   cardPadding: { padding: 12 },
   titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   noteCardTitle: { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'bold', flex: 1 },
-  noteCardBody: { fontFamily: 'sans-serif', fontSize: 12, lineHeight: 16, marginBottom: 8 },
+  noteCardBody: { marginBottom: 8 },
+  checklistBadge: { flexDirection: 'row', alignItems: 'center', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2 },
+  checklistBadgeText: { fontSize: 9, fontWeight: 'bold', marginLeft: 3 },
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   cardDate: { fontSize: 10, fontFamily: 'sans-serif' },
   voiceBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },

@@ -1,10 +1,51 @@
-import { cloudClient, setMockOnlineState } from '../../src/cloud/cloudClient';
+import {
+  CLOUD_API_BASE_URL,
+  LOCAL_API_BASE_URL,
+  cloudClient,
+  setMockOnlineState,
+} from '../../src/cloud/cloudClient';
 import { userStore } from '../../src/storage/userStore';
 import { secureKeystore } from '../../src/utils/keystore';
 
 describe('cloudClient', () => {
   afterEach(() => {
+    cloudClient.resetBaseUrls();
     jest.restoreAllMocks();
+  });
+
+  it('uses the deployed Render API as the primary endpoint', () => {
+    expect(cloudClient.getBaseUrl()).toBe(CLOUD_API_BASE_URL);
+  });
+
+  it('falls back to the local FastAPI server when Render is unreachable', async () => {
+    setMockOnlineState(true);
+    const mockFetch = jest
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Render unavailable'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: jest.fn().mockResolvedValue({ status: 'ok' }),
+      });
+    global.fetch = mockFetch as typeof fetch;
+
+    const result = await cloudClient.request<{ status: string }>('/healthz', {}, false);
+
+    expect(result).toEqual({
+      status: 'success',
+      data: { status: 'ok' },
+      httpStatus: 200,
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      `${CLOUD_API_BASE_URL}/healthz`,
+      expect.any(Object)
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      `${LOCAL_API_BASE_URL}/healthz`,
+      expect.any(Object)
+    );
   });
 
   it('returns offline status when device is offline', async () => {

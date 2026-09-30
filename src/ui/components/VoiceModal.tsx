@@ -13,8 +13,8 @@ import {
   DeviceEventEmitter,
   PermissionsAndroid,
 } from 'react-native';
-import { Colors, Fonts, Shadows } from '../theme';
-import { X, Check, ArrowRight, Mic } from 'lucide-react-native';
+import { Fonts, Shadows } from '../theme';
+import { X, Check, ArrowRight, Mic, CircleAlert } from 'lucide-react-native';
 import { processCommand } from '../../ai';
 import { useTheme } from '../contexts/ThemeContext';
 import { useThemedStyles } from '../theme/createThemedStyles';
@@ -34,11 +34,16 @@ interface VoiceModalProps {
 
 type VoiceState = 'idle' | 'listening' | 'processing' | 'success' | 'error';
 
-const PRESET_COMMANDS = [
-  'Add task submit report by 5pm',
-  'Block 2-4pm today for deep work',
-  'Note: review pilot evaluation parameters',
-];
+const WAVE_BAR_COUNT = 11;
+
+/** The line under the title: what the mic is doing, in a few words. */
+const STATUS_TEXT: Record<VoiceState, string> = {
+  idle: 'Hold the mic button to talk',
+  listening: 'Listening… let go when you’re done',
+  processing: 'Working on it…',
+  success: 'Done',
+  error: 'That didn’t work',
+};
 
 export const VoiceModal: React.FC<VoiceModalProps> = ({
   visible,
@@ -46,18 +51,20 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   onClose,
 }) => {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
-  const [transcribedText, setTranscribedText] = useState('');
-  const [debugText, setDebugText] = useState('');
+  /** What was heard, live while talking and final once the mic is let go. */
+  const [transcript, setTranscript] = useState('');
+  /** Why nothing was heard, when that happens (no microphone, silence, a failure). */
+  const [notice, setNotice] = useState('');
   const [aiReply, setAiReply] = useState('');
   const [inputText, setInputText] = useState('');
 
   // Animated values
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
-  // Waveform bars
+  // Waveform bars, scaled on the native driver
   const waveBars = useRef(
-    Array.from({ length: 9 }, () => new Animated.Value(8)),
+    Array.from({ length: WAVE_BAR_COUNT }, () => new Animated.Value(0.2)),
   ).current;
   const waveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeCaptureRef = useRef(0);
@@ -66,7 +73,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   const speechCaptureRef = useRef<OfflineSpeechCaptureHandle | null>(null);
 
   const { colors } = useTheme();
-  const themed = useThemedStyles((c, d) => getVoiceThemedStyles(c, d));
+  const themed = useThemedStyles(getVoiceThemedStyles);
 
   const ensureMicrophonePermission = useCallback(async (): Promise<boolean> => {
     try {
@@ -107,29 +114,16 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   }, [ensureMicrophonePermission, visible]);
 
   useEffect(() => {
-    const partialSub = DeviceEventEmitter.addListener(
-      'onSpeechPartialResult',
-      (e: { captureId?: string; transcript?: string }) => {
-        if (e.captureId && e.captureId !== speechCaptureRef.current?.captureId)
-          return;
-        if (e?.transcript) {
-          setDebugText(e.transcript);
-          setTranscribedText(`"${e.transcript}"`);
-        }
-      },
-    );
-
-    const finalSub = DeviceEventEmitter.addListener(
-      'onSpeechFinalResult',
-      (e: { captureId?: string; transcript?: string }) => {
-        if (e.captureId && e.captureId !== speechCaptureRef.current?.captureId)
-          return;
-        if (e?.transcript) {
-          setDebugText(e.transcript);
-          setTranscribedText(`"${e.transcript}"`);
-        }
-      },
-    );
+    const showHeard = (e: { captureId?: string; transcript?: string }) => {
+      if (e.captureId && e.captureId !== speechCaptureRef.current?.captureId)
+        return;
+      if (e?.transcript) {
+        setTranscript(e.transcript);
+        setNotice('');
+      }
+    };
+    const partialSub = DeviceEventEmitter.addListener('onSpeechPartialResult', showHeard);
+    const finalSub = DeviceEventEmitter.addListener('onSpeechFinalResult', showHeard);
 
     return () => {
       partialSub.remove();
@@ -140,20 +134,20 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   const stopWaveform = useCallback(() => {
     if (waveIntervalRef.current) {
       clearInterval(waveIntervalRef.current);
+      waveIntervalRef.current = null;
     }
-    waveBars.forEach(bar => bar.setValue(8));
+    waveBars.forEach(bar => bar.setValue(0.2));
   }, [waveBars]);
 
   const startWaveform = useCallback(() => {
     stopWaveform();
     waveIntervalRef.current = setInterval(() => {
       waveBars.forEach(bar => {
-        const randomHeight = Math.floor(Math.random() * 40) + 6;
         Animated.timing(bar, {
-          toValue: randomHeight,
+          toValue: 0.2 + Math.random() * 0.8,
           duration: 180,
           easing: Easing.ease,
-          useNativeDriver: false,
+          useNativeDriver: true,
         }).start();
       });
     }, 200);
@@ -167,14 +161,14 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       speechCaptureRef.current = null;
       if (capture) void cancelOfflineSpeechCapture(capture.captureId);
       setVoiceState('idle');
-      setTranscribedText('');
-      setDebugText('');
+      setTranscript('');
+      setNotice('');
       stopWaveform();
       return;
     }
 
-    setTranscribedText('');
-    setDebugText('');
+    setTranscript('');
+    setNotice('');
     setAiReply('');
     setInputText('');
     setVoiceState('idle');
@@ -185,23 +179,19 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
     if (visible && voiceState === 'listening') {
       startWaveform();
 
+      // A ring that swells out from the button and fades, over and over.
+      pulseAnim.setValue(0);
       animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1.0,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-        ]),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1400,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
       );
       animation.start();
     } else {
-      pulseAnim.setValue(1);
+      pulseAnim.setValue(0);
       stopWaveform();
     }
 
@@ -260,15 +250,15 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       return;
     }
     if (!hasPermission) {
-      setTranscribedText('');
-      setDebugText('Microphone access is required to transcribe speech.');
+      setTranscript('');
+      setNotice('LAFINA needs microphone access to hear you. Allow it and try again.');
       triggerErrorShake('idle');
       return;
     }
 
     setVoiceState('listening');
-    setTranscribedText('Listening...');
-    setDebugText('');
+    setTranscript('');
+    setNotice('');
     setAiReply('');
 
     try {
@@ -279,9 +269,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       });
     } catch (error) {
       console.error('Failed to start offline Whisper capture:', error);
-      setDebugText(
-        'Offline speech recognition could not start. Please try again.',
-      );
+      setNotice('Speech recognition could not start. Please try again.');
       triggerErrorShake('idle');
     }
   }, [ensureMicrophonePermission, triggerErrorShake]);
@@ -306,11 +294,10 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       if (activeCaptureRef.current !== uiCaptureId) return;
 
       const finalTranscript = result.transcript.trim();
-      setDebugText(finalTranscript);
-      setTranscribedText(finalTranscript ? `"${finalTranscript}"` : '');
+      setTranscript(finalTranscript);
 
       if (!finalTranscript) {
-        setDebugText('(No speech transcribed)');
+        setNotice('I didn’t catch that. Hold the mic and try again.');
         triggerErrorShake('idle');
         return;
       }
@@ -331,16 +318,17 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       if (speechCaptureRef.current?.captureId === capture.captureId) {
         speechCaptureRef.current = null;
       }
-      setDebugText('Speech recognition could not finish. Please try again.');
+      setNotice('Speech recognition could not finish. Please try again.');
       triggerErrorShake('idle');
     }
   }, [onClose, triggerErrorShake, userId]);
+
   const handleCommandProcess = (command: string) => {
     if (!command.trim()) return;
     activeCaptureRef.current += 1;
     Keyboard.dismiss();
-    setTranscribedText(`"${command}"`);
-    setDebugText(command);
+    setTranscript(command);
+    setNotice('');
     setVoiceState('processing');
 
     setTimeout(() => {
@@ -363,6 +351,25 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
 
   const showFallbackControls =
     voiceState === 'idle' || voiceState === 'listening';
+  const listening = voiceState === 'listening';
+
+  const micColor =
+    voiceState === 'success'
+      ? colors.success
+      : voiceState === 'error'
+      ? colors.error
+      : listening
+      ? colors.red
+      : colors.blue;
+
+  const statusColor =
+    voiceState === 'error'
+      ? colors.error
+      : voiceState === 'success'
+      ? colors.success
+      : listening
+      ? colors.red
+      : colors.textSecondary;
 
   return (
     <Modal
@@ -372,7 +379,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       onRequestClose={() => onClose(false)}
     >
       <TouchableOpacity
-        style={styles.overlay}
+        style={[styles.overlay, themed.overlay]}
         activeOpacity={1}
         onPress={() => onClose(false)}
       >
@@ -381,10 +388,14 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
           activeOpacity={1}
           onPress={() => Keyboard.dismiss()}
         >
+          <View style={[styles.grabber, themed.grabber]} />
+
           {/* Close button */}
           <TouchableOpacity
             style={[styles.closeButton, themed.closeButton]}
             onPress={() => onClose(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close voice assistant"
           >
             <X size={16} color={colors.textPrimary} />
           </TouchableOpacity>
@@ -393,17 +404,22 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
           <Text style={[styles.modalTitle, themed.modalTitle]}>
             LAFINA Voice Assistant
           </Text>
-          <Text style={styles.pushToTalkSubheading}>
-            Hold the mic button below to talk
+          <Text style={[styles.statusText, { color: statusColor }]} accessibilityLiveRegion="polite">
+            {STATUS_TEXT[voiceState]}
           </Text>
 
           {/* Central Push-To-Talk Hold Button */}
           <View style={styles.animationArea}>
-            {voiceState === 'listening' && (
+            {listening && (
               <Animated.View
+                pointerEvents="none"
                 style={[
                   styles.listeningRing,
-                  { transform: [{ scale: pulseAnim }] },
+                  {
+                    borderColor: colors.red,
+                    opacity: pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+                    transform: [{ scale: pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.55] }) }],
+                  },
                 ]}
               />
             )}
@@ -412,20 +428,15 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
               activeOpacity={0.8}
               onPressIn={handlePressIn}
               onPressOut={handlePressOut}
+              accessibilityRole="button"
+              accessibilityLabel="Hold to talk"
             >
               <Animated.View
                 style={[
                   styles.voicePulseCircle,
                   {
                     transform: [{ translateX: shakeAnim }],
-                    backgroundColor:
-                      voiceState === 'success'
-                        ? colors.success
-                        : voiceState === 'error'
-                        ? colors.error
-                        : voiceState === 'listening'
-                        ? colors.red
-                        : colors.blue,
+                    backgroundColor: micColor,
                   },
                 ]}
               >
@@ -442,61 +453,57 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
             </TouchableOpacity>
           </View>
 
-          {/* Temporary Debug Transcription Display Box */}
-          <View style={[styles.debugBox, themed.debugBox]}>
-            <Text style={styles.debugTitle}>
-              🔍 [DEBUG] Live Transcribed Speech:
-            </Text>
-            <Text style={styles.debugText}>
-              {debugText
-                ? `"${debugText}"`
-                : transcribedText ||
-                  '(Press and hold mic button above to speak)'}
-            </Text>
-          </View>
-
-          {/* Waveform indicator */}
-          {voiceState === 'listening' && (
-            <View style={styles.waveformContainer}>
-              {waveBars.map((bar, i) => (
-                <Animated.View
-                  key={i}
-                  style={[
-                    styles.waveformBar,
-                    { height: bar, backgroundColor: colors.red },
-                  ]}
-                />
-              ))}
+          {/* What LAFINA heard, live as you speak */}
+          <View style={[styles.transcriptCard, themed.transcriptCard, listening && { borderColor: colors.red }]}>
+            <View style={styles.transcriptHeader}>
+              <Text style={[styles.transcriptLabel, themed.transcriptLabel]}>You said</Text>
+              {listening && (
+                <View style={[styles.livePill, themed.livePill]}>
+                  <View style={[styles.liveDot, { backgroundColor: colors.red }]} />
+                  <Text style={[styles.liveText, { color: colors.red }]}>Live</Text>
+                </View>
+              )}
             </View>
-          )}
 
-          {/* AI Reply Text */}
-          {aiReply ? <Text style={styles.aiReplyText}>{aiReply}</Text> : null}
-
-          {/* Simulated presets */}
-          {showFallbackControls && (
-            <View style={styles.presetsBlock}>
-              <Text style={[styles.presetsTitle, themed.presetsTitle]}>
-                Try a simulated command:
+            {notice ? (
+              <View style={styles.noticeRow}>
+                <CircleAlert size={16} color={colors.error} />
+                <Text style={[styles.noticeText, { color: colors.error }]}>{notice}</Text>
+              </View>
+            ) : transcript ? (
+              <Text style={[styles.transcriptText, themed.transcriptText]} testID="voice-transcript">
+                “{transcript}”
               </Text>
-              <View style={styles.presetsRow}>
-                {PRESET_COMMANDS.slice(0, 3).map((cmd, i) => (
-                  <TouchableOpacity
+            ) : (
+              <Text style={[styles.placeholderText, themed.placeholderText]}>
+                {listening ? 'Go ahead, I’m listening…' : 'Your words will show up here as you speak.'}
+              </Text>
+            )}
+
+            {listening && (
+              <View style={styles.waveformContainer}>
+                {waveBars.map((bar, i) => (
+                  <Animated.View
                     key={i}
-                    style={[styles.presetChip, themed.presetChip]}
-                    onPress={() => handleCommandProcess(cmd)}
-                  >
-                    <Text
-                      style={[styles.presetChipText, themed.presetChipText]}
-                      numberOfLines={1}
-                    >
-                      {cmd}
-                    </Text>
-                  </TouchableOpacity>
+                    style={[
+                      styles.waveformBar,
+                      { backgroundColor: colors.red, transform: [{ scaleY: bar }] },
+                    ]}
+                  />
                 ))}
               </View>
+            )}
+          </View>
+
+          {/* What LAFINA did about it */}
+          {aiReply ? (
+            <View style={[styles.replyRow, themed.replyRow]}>
+              <View style={[styles.replyIcon, { backgroundColor: colors.success }]}>
+                <Check size={12} color={colors.white} strokeWidth={3} />
+              </View>
+              <Text style={[styles.replyText, themed.replyText]}>{aiReply}</Text>
             </View>
-          )}
+          ) : null}
 
           {/* Keyboard input fallback */}
           {showFallbackControls && (
@@ -510,8 +517,10 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
                 onSubmitEditing={() => handleCommandProcess(inputText)}
               />
               <TouchableOpacity
-                style={styles.sendButton}
+                style={[styles.sendButton, { backgroundColor: colors.red }]}
                 onPress={() => handleCommandProcess(inputText)}
+                accessibilityRole="button"
+                accessibilityLabel="Send command"
               >
                 <ArrowRight size={18} color={colors.white} />
               </TouchableOpacity>
@@ -523,23 +532,22 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   );
 };
 
-const getVoiceThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
+const getVoiceThemedStyles = (colors: ThemeColors) => ({
+  overlay: { backgroundColor: colors.overlay },
   modalContent: { backgroundColor: colors.cardBg },
-  closeButton: {
-    backgroundColor: isDarkMode
-      ? 'rgba(255, 255, 255, 0.1)'
-      : 'rgba(0, 0, 0, 0.05)',
-  },
+  grabber: { backgroundColor: colors.border },
+  closeButton: { backgroundColor: colors.inputBg },
   modalTitle: { color: colors.textPrimary },
-  debugBox: {
-    backgroundColor: isDarkMode
-      ? 'rgba(255, 255, 255, 0.08)'
-      : 'rgba(0, 0, 0, 0.05)',
+  transcriptCard: {
+    backgroundColor: colors.inputBg,
     borderColor: colors.border,
   },
-  presetsTitle: { color: colors.textSecondary },
-  presetChip: { backgroundColor: colors.inputBg },
-  presetChipText: { color: colors.textPrimary },
+  transcriptLabel: { color: colors.textSecondary },
+  livePill: { backgroundColor: colors.cardBg },
+  transcriptText: { color: colors.textPrimary },
+  placeholderText: { color: colors.textMuted },
+  replyRow: { backgroundColor: colors.inputBg },
+  replyText: { color: colors.textPrimary },
   inputRow: { backgroundColor: colors.inputBg },
   textInput: { color: colors.textPrimary },
 });
@@ -547,21 +555,26 @@ const getVoiceThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    paddingHorizontal: 24,
-    paddingTop: 32,
-    paddingBottom: 40,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 32,
     alignItems: 'center',
+  },
+  grabber: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: 20,
   },
   closeButton: {
     position: 'absolute',
-    right: 20,
-    top: 20,
+    right: 16,
+    top: 16,
     width: 32,
     height: 32,
     borderRadius: 16,
@@ -574,110 +587,139 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 4,
   },
-  pushToTalkSubheading: {
+  statusText: {
     fontFamily: Fonts.body,
-    fontSize: 12,
-    color: Colors.yellow,
-    marginBottom: 20,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 16,
   },
   animationArea: {
-    height: 110,
-    width: 110,
+    height: 120,
+    width: 120,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
   },
   listeningRing: {
     position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 2,
-    borderColor: 'rgba(247, 90, 90, 0.6)',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 3,
   },
   voicePulseCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     alignItems: 'center',
     justifyContent: 'center',
     ...Shadows.micButton,
   },
 
-  // Temporary Debug Box
-  debugBox: {
+  // What LAFINA heard
+  transcriptCard: {
     width: '100%',
-    padding: 12,
-    borderRadius: 12,
+    minHeight: 96,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 14,
+    borderRadius: 16,
     borderWidth: 1,
-    marginBottom: 16,
+    marginBottom: 12,
+  },
+  transcriptHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
-  debugTitle: {
-    fontSize: 11,
-    fontFamily: Fonts.heading,
-    fontWeight: 'bold',
-    color: Colors.yellow,
-    marginBottom: 4,
-  },
-  debugText: {
-    fontSize: 13,
+  transcriptLabel: {
     fontFamily: Fonts.body,
-    color: Colors.blue,
-    fontWeight: '600',
-    textAlign: 'center',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
-
+  livePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 5,
+  },
+  liveText: {
+    fontFamily: Fonts.body,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  transcriptText: {
+    fontFamily: Fonts.body,
+    fontSize: 16,
+    fontWeight: '500',
+    lineHeight: 23,
+  },
+  placeholderText: {
+    fontFamily: Fonts.body,
+    fontSize: 14,
+    fontStyle: 'italic',
+    lineHeight: 20,
+  },
+  noticeRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  noticeText: {
+    flex: 1,
+    fontFamily: Fonts.body,
+    fontSize: 14,
+    lineHeight: 20,
+  },
   waveformContainer: {
     flexDirection: 'row',
-    height: 36,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginTop: 12,
   },
   waveformBar: {
     width: 3,
+    height: 28,
     borderRadius: 1.5,
     marginHorizontal: 3,
   },
-  aiReplyText: {
+
+  // What LAFINA did
+  replyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  replyIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  replyText: {
+    flex: 1,
     fontFamily: Fonts.body,
     fontSize: 14,
-    color: Colors.yellow,
-    textAlign: 'center',
-    marginHorizontal: 24,
-    marginBottom: 16,
-    fontStyle: 'italic',
-  },
-
-  // Presets styling
-  presetsBlock: {
-    width: '100%',
-    marginVertical: 8,
-  },
-  presetsTitle: {
-    fontFamily: Fonts.body,
-    fontSize: 12,
-    marginBottom: 8,
-    alignSelf: 'flex-start',
-  },
-  presetsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginBottom: 6,
-  },
-  presetChip: {
-    flex: 1,
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    marginHorizontal: 4,
-    alignItems: 'center',
-  },
-  presetChipText: {
-    fontSize: 11,
-    fontFamily: Fonts.body,
+    lineHeight: 20,
   },
 
   // Input styling
@@ -701,7 +743,6 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: Colors.red,
     alignItems: 'center',
     justifyContent: 'center',
   },

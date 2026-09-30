@@ -1,8 +1,82 @@
 import { DeviceEventEmitter } from 'react-native';
-import { remindersStore } from '../storage';
+import { remindersStore, businessTasksStore } from '../storage';
+import { getReminderPreferences } from './userPreferences';
 
 let pollingInterval: any = null;
 let activeUserId: string | null = null;
+
+/**
+ * Reconciles reminder alarms for assigned business tasks.
+ * Only schedules reminders for active employee assignments on the assigned employee's device.
+ */
+export const reconcileBusinessAssignmentReminders = (
+  userId: string,
+  businessId: string
+): void => {
+  try {
+    const assigned = businessTasksStore.getAssignedTasksForEmployee(businessId, userId);
+    for (const { task, assignment } of assigned) {
+      const isEnded =
+        task.is_cancelled === 1 ||
+        assignment.status === 'completed' ||
+        task.deleted_at !== null ||
+        assignment.deleted_at !== null;
+
+      if (isEnded || !task.due_date) {
+        // Cancel/delete reminder if exists
+        const existing = remindersStore.getReminderById(assignment.id);
+        if (existing && !existing.deletedAt) {
+          remindersStore.deleteReminder(assignment.id);
+        }
+        continue;
+      }
+
+      // Calculate trigger time = due_date - lead_minutes
+      const dueMillis = new Date(task.due_date).getTime();
+      if (Number.isNaN(dueMillis)) continue;
+
+      const userPrefs = getReminderPreferences(userId);
+      const effectiveLead = typeof task.reminder_lead_minutes === 'number'
+        ? task.reminder_lead_minutes
+        : userPrefs.leadTimeMinutes;
+      const leadMillis = effectiveLead * 60 * 1000;
+      const triggerMillis = dueMillis - leadMillis;
+      const triggerAt = new Date(triggerMillis).toISOString();
+
+      const existing = remindersStore.getReminderById(assignment.id);
+      if (!existing) {
+        remindersStore.insertReminder({
+          id: assignment.id,
+          userId,
+          task: task.title,
+          description: task.instructions || null,
+          scheduledAt: task.due_date,
+          triggerAt,
+          status: 'pending',
+          preCastAudioPath: null,
+        });
+      } else if (
+        existing.triggerAt !== triggerAt ||
+        existing.task !== task.title ||
+        existing.scheduledAt !== task.due_date
+      ) {
+        remindersStore.deleteReminder(assignment.id);
+        remindersStore.insertReminder({
+          id: assignment.id,
+          userId,
+          task: task.title,
+          description: task.instructions || null,
+          scheduledAt: task.due_date,
+          triggerAt,
+          status: 'pending',
+          preCastAudioPath: null,
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[Scheduler] Failed to reconcile business assignment reminders:', error);
+  }
+};
 
 /**
  * Checks for due reminders and dispatches the call trigger if any are found.

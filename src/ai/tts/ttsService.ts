@@ -234,3 +234,34 @@ export const deletePreCachedReminderAudio = async (
     console.warn('[TTS Cache] Failed to delete reminder audio:', error);
   }
 };
+
+/**
+ * Formats and sanitizes email content (subject, sender, body) for natural Kokoro TTS playback.
+ */
+export const cleanEmailForReadAloud = (
+  subject: string,
+  sender: string,
+  body: string
+): string => {
+  let cleanBody = body
+    // Remove reply quotes like "> On Mon, Jan 1..."
+    .replace(/^>+.*$/gm, '')
+    // Remove common email signature dashes and footer
+    .replace(/--\s*[\s\S]*$/, '')
+    // Replace long URLs with spoken word 'link'
+    .replace(/https?:\/\/[^\s]+/g, 'link')
+    // Remove excessive newlines
+    .replace(/\n\s*\n+/g, '. ')
+    .trim();
+
+  if (!cleanBody) {
+    cleanBody = 'No text content.';
+  }
+
+  // Extract clean sender name from "Name <email@domain.com>"
+  const senderMatch = sender.match(/^([^<]+)/);
+  const senderName = senderMatch ? senderMatch[1].trim().replace(/"/g, '') : sender;
+
+  return `Email from ${senderName}. Subject: ${subject}. ${cleanBody}`;
+};
+

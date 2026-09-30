@@ -16,28 +16,29 @@ export interface ReminderPreferences {
  * @returns The resolved preferences with default fallbacks.
  */
 export const getReminderPreferences = (userId: string): ReminderPreferences => {
-  // Default values
   let leadTimeMinutes = parseInt(DEFAULT_REMINDER_LEAD, 10) || 15;
   let snoozeDurationMinutes = 5;
   let maxSnoozeCount = 1;
-  const autoSnoozeDurationMinutes = 5;
+  let autoSnoozeDurationMinutes = 5;
 
   try {
-    // The editable SQLite row is the current source of truth.
+    // 1. The editable SQLite row is the primary source of truth.
     const savedPreferences = preferencesStore.getStored(userId);
     if (savedPreferences) {
       const { snoozeDuration, maxSnoozes } = mapSnoozeBehavior(
         savedPreferences.snoozeTendency
       );
       return {
-        leadTimeMinutes: savedPreferences.reminderLeadMinutes,
+        leadTimeMinutes: typeof savedPreferences.reminderLeadMinutes === 'number'
+          ? savedPreferences.reminderLeadMinutes
+          : leadTimeMinutes,
         snoozeDurationMinutes: snoozeDuration,
         maxSnoozeCount: maxSnoozes,
-        autoSnoozeDurationMinutes,
+        autoSnoozeDurationMinutes: snoozeDuration,
       };
     }
 
-    // Legacy fallback: try to read from ML feature snapshots.
+    // 2. Fallback to ML feature snapshots.
     const snapshot = behaviorStore.getLatestFeatureSnapshot(userId, 'schedule_preference');
     if (snapshot && snapshot.featureVector) {
       const vector = JSON.parse(snapshot.featureVector);
@@ -48,6 +49,7 @@ export const getReminderPreferences = (userId: string): ReminderPreferences => {
         const { snoozeDuration, maxSnoozes } = mapSnoozeBehavior(vector.reminderSnoozeBehavior);
         snoozeDurationMinutes = snoozeDuration;
         maxSnoozeCount = maxSnoozes;
+        autoSnoozeDurationMinutes = snoozeDuration;
         return {
           leadTimeMinutes,
           snoozeDurationMinutes,
@@ -57,7 +59,7 @@ export const getReminderPreferences = (userId: string): ReminderPreferences => {
       }
     }
 
-    // Final legacy fallback: read the original onboarding behavior logs.
+    // 3. Fallback to onboarding behavior logs.
     const logs = behaviorStore.getBehaviorLogs(userId, 'onboarding_response');
     const leadTimeLog = logs.find((l) => l.eventKey === 'preferred_reminder_lead_time');
     const snoozeLog = logs.find((l) => l.eventKey === 'reminder_response_tendency');
@@ -73,6 +75,7 @@ export const getReminderPreferences = (userId: string): ReminderPreferences => {
     const { snoozeDuration, maxSnoozes } = mapSnoozeBehavior(snoozeBehaviorStr);
     snoozeDurationMinutes = snoozeDuration;
     maxSnoozeCount = maxSnoozes;
+    autoSnoozeDurationMinutes = snoozeDuration;
 
   } catch (error) {
     console.error('Error loading user reminder preferences:', error);

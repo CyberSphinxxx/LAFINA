@@ -1,9 +1,10 @@
 import { useState, useCallback } from 'react';
 import { Alert } from 'react-native';
 import type { Task, Event } from '../../../../storage';
-import { tasksStore } from '../../../../storage';
+import { tasksStore, remindersStore } from '../../../../storage';
 import { ScheduleItemForm, ScheduleItemModalState } from '../types';
 import { generateId } from '../../../../utils';
+import { getReminderPreferences, scheduleReminderAlarm } from '../../../../scheduler';
 
 interface UseScheduleItemModalOptions {
   userId: string;
@@ -89,6 +90,40 @@ export const useScheduleItemModal = (options: UseScheduleItemModalOptions): Sche
     const dateStr = selectedDate.toISOString().split('T')[0];
     const rule = recurrenceRule !== undefined ? recurrenceRule : (form.recurrenceRule || null);
 
+    const syncReminder = (title: string, date: string, time: string) => {
+      try {
+        const prefs = getReminderPreferences(userId);
+        const leadTimeMinutes = prefs.leadTimeMinutes;
+        const localScheduledDate = new Date(`${date}T${time}:00`);
+        if (isNaN(localScheduledDate.getTime())) return;
+
+        const scheduledAt = localScheduledDate.toISOString();
+        const preferredTriggerMs =
+          localScheduledDate.getTime() - leadTimeMinutes * 60 * 1000;
+        const triggerAt = new Date(
+          Math.max(preferredTriggerMs, Date.now() + 1000),
+        ).toISOString();
+
+        const reminderId = generateId('rem');
+        remindersStore.insertReminder({
+          id: reminderId,
+          userId,
+          task: title,
+          description: 'Scheduled reminder',
+          scheduledAt,
+          triggerAt,
+          status: 'pending',
+          preCastAudioPath: null,
+        });
+
+        void scheduleReminderAlarm(reminderId, title, triggerAt).catch((err) => {
+          console.error('[Calendar] Failed to schedule reminder alarm:', err);
+        });
+      } catch (err) {
+        console.error('[Calendar] Failed to create auto-reminder:', err);
+      }
+    };
+
     if (modalType === 'task') {
       if (editingItem) {
         tasksStore.updateTask({
@@ -100,9 +135,11 @@ export const useScheduleItemModal = (options: UseScheduleItemModalOptions): Sche
           notes: form.notes,
           recurrenceRule: rule,
         });
+        syncReminder(form.title, dateStr, form.time);
       } else {
+        const taskId = generateId('task');
         tasksStore.insertTask({
-          id: generateId('task'),
+          id: taskId,
           userId,
           title: form.title,
           dueDate: dateStr,
@@ -113,6 +150,7 @@ export const useScheduleItemModal = (options: UseScheduleItemModalOptions): Sche
           notes: form.notes,
           recurrenceRule: rule,
         });
+        syncReminder(form.title, dateStr, form.time);
       }
     } else {
       if (editingItem) {
@@ -125,9 +163,11 @@ export const useScheduleItemModal = (options: UseScheduleItemModalOptions): Sche
           location: form.location,
           recurrenceRule: rule,
         });
+        syncReminder(form.title, dateStr, form.time);
       } else {
+        const eventId = generateId('event');
         tasksStore.insertEvent({
-          id: generateId('event'),
+          id: eventId,
           userId,
           title: form.title,
           date: dateStr,
@@ -136,6 +176,7 @@ export const useScheduleItemModal = (options: UseScheduleItemModalOptions): Sche
           location: form.location,
           recurrenceRule: rule,
         });
+        syncReminder(form.title, dateStr, form.time);
       }
     }
 

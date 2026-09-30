@@ -1,6 +1,8 @@
 import RNFS from 'react-native-fs';
 import { cloudClient } from './cloudClient';
+import { accountLinkService } from './accountLinkService';
 import { userStore } from '../storage/userStore';
+import { businessStore } from '../storage/businessStore';
 import {
   playSpeechFile,
   speakTextWithTts,
@@ -21,6 +23,13 @@ interface TtsApiResponse {
   model: string;
   voice: string;
   createdAt: string;
+}
+
+interface EntitlementSnapshot {
+  role: string;
+  subscriptionPlan: string;
+  effectivePlan: string;
+  entitled: boolean;
 }
 
 const waitForPreparation = async (
@@ -63,31 +72,136 @@ export const createCallSpeechProvider = (
   let activePlaybackController: AbortController | null = null;
   let cancellationSequence = 0;
   let disposed = false;
+  let roleRefreshAttempted = false;
+  let cloudLinkAttempted = false;
 
   const normalizeText = (text: string): string => text.trim().substring(0, 512);
 
+  const getEntitlementSnapshot = (): EntitlementSnapshot => {
+    const localUser = userStore.getUserById(userId);
+    const cachedBiz = businessStore.getCachedCapabilities(userId);
+    const role = localUser?.role ?? 'unknown';
+    const subscriptionPlan = cachedBiz?.subscriptionPlan ?? 'unknown';
+    const effectivePlan = cachedBiz?.effectivePlan ?? 'unknown';
+    return {
+      role,
+      subscriptionPlan,
+      effectivePlan,
+      entitled:
+        localUser?.role === 'student_pro' ||
+        localUser?.role === 'business' ||
+        cachedBiz?.effectivePlan === 'business' ||
+        cachedBiz?.effectivePlan === 'student_pro' ||
+        cachedBiz?.subscriptionPlan === 'business' ||
+        cachedBiz?.subscriptionPlan === 'student_pro',
+    };
+  };
+
   const canUseGemini = async (): Promise<boolean> => {
     if (disposed) return false;
-    const activeSessionToken = userStore.getActiveSessionToken();
-    const localUser = userStore.getUserById(userId);
-    if (
-      activeSessionToken.userId !== userId ||
-      localUser?.role !== 'student_pro' ||
-      !cloudClient.getAccessToken()
-    ) {
-      return false;
-    }
+
+    // 1. Connectivity is the primary gate: an offline device always falls back
+    //    to on-device Kokoro rather than attempting a doomed network request.
+    let online = false;
     try {
-      return await cloudClient.isOnline();
+      online = await cloudClient.isOnline();
     } catch {
+      online = false;
+    }
+    if (!online) {
+      console.warn(
+        '[CloudSpeech] Gemini TTS skipped — device is offline. Using Kokoro fallback.',
+      );
       return false;
     }
+
+    // 2. A cloud token is required to call the authenticated /v1/ai/tts proxy.
+    let activeSessionToken = userStore.getActiveSessionToken();
+    if (activeSessionToken.userId !== userId) {
+      console.warn(
+        '[CloudSpeech] Gemini TTS skipped — the cloud session belongs to a different local user. Using Kokoro fallback.',
+      );
+      return false;
+    }
+    let hasToken =
+      !!cloudClient.getAccessToken() || !!activeSessionToken.accessToken;
+    if (!hasToken && !cloudLinkAttempted) {
+      cloudLinkAttempted = true;
+      try {
+        const linkResult = await accountLinkService.completeDeferredCloudLink(
+          userId
+        );
+        if (linkResult.status !== 'success') {
+          console.warn(
+            `[CloudSpeech] Automatic FastAPI linking did not complete (${linkResult.status}): ${linkResult.message}`,
+          );
+        }
+        activeSessionToken = userStore.getActiveSessionToken();
+        hasToken =
+          !!cloudClient.getAccessToken() || !!activeSessionToken.accessToken;
+      } catch (error: unknown) {
+        console.warn(
+          '[CloudSpeech] Automatic FastAPI linking threw:',
+          error instanceof Error ? error.message : 'Unknown linking error.',
+        );
+      }
+    }
+    if (!hasToken) {
+      console.warn(
+        '[CloudSpeech] Gemini TTS skipped — no active cloud session token. Sign in while online to link FastAPI automatically. Using Kokoro fallback.',
+      );
+      return false;
+    }
+
+    // 3. Entitlement short-circuit: Gemini TTS is a student_pro/business feature.
+    //    Accounts the backend will reject (403) are routed straight to Kokoro.
+    //    The locally stored role can go stale (e.g. the backend account was
+    //    upgraded after linking), so refresh it from the authoritative FastAPI
+    //    profile once before giving up. Note: the backend /v1/ai/tts endpoint
+    //    intentionally excludes `admin` (unlike /v1/ai/chat), so admin is NOT
+    //    entitled here.
+    let entitlement = getEntitlementSnapshot();
+    if (!entitlement.entitled && !roleRefreshAttempted) {
+      roleRefreshAttempted = true;
+      console.info(
+        `[CloudSpeech] Local TTS entitlement may be stale (role=${entitlement.role}, subscriptionPlan=${entitlement.subscriptionPlan}, effectivePlan=${entitlement.effectivePlan}); refreshing the cloud profile once.`,
+      );
+      try {
+        const refresh = await accountLinkService.refreshCloudProfile(userId);
+        if (refresh.status !== 'success') {
+          console.warn(
+            `[CloudSpeech] Cloud profile refresh failed (${refresh.status}): ${refresh.message}`,
+          );
+        } else {
+          entitlement = getEntitlementSnapshot();
+          console.info(
+            `[CloudSpeech] Cloud profile refresh succeeded (role=${entitlement.role}, subscriptionPlan=${entitlement.subscriptionPlan}, effectivePlan=${entitlement.effectivePlan}).`,
+          );
+        }
+      } catch (error) {
+        console.warn('[CloudSpeech] Cloud profile refresh threw:', error);
+      }
+    }
+
+    entitlement = getEntitlementSnapshot();
+    if (!entitlement.entitled) {
+      console.warn(
+        `[CloudSpeech] Gemini TTS skipped — local entitlement is insufficient (role=${entitlement.role}, subscriptionPlan=${entitlement.subscriptionPlan}, effectivePlan=${entitlement.effectivePlan}; student_pro or business required). Using Kokoro fallback.`,
+      );
+      return false;
+    }
+
+    console.info(
+      `[CloudSpeech] Gemini TTS selected (role=${entitlement.role}, subscriptionPlan=${entitlement.subscriptionPlan}, effectivePlan=${entitlement.effectivePlan}).`,
+    );
+    return true;
   };
 
   const executeKokoroFallback = async (
     text: string,
     fallbackAudioPath?: string | null,
   ): Promise<CallSpeechResult> => {
+    console.info('[CloudSpeech] Kokoro TTS selected as the local fallback.');
     if (fallbackAudioPath) {
       try {
         const playable = await RNFS.exists(fallbackAudioPath);
@@ -148,6 +262,10 @@ export const createCallSpeechProvider = (
         );
         return null;
       }
+
+      console.info(
+        `[CloudSpeech] Gemini TTS audio received (model=${result.data.model}, voice=${result.data.voice}).`,
+      );
 
       await RNFS.writeFile(wavPath, result.data.audioBase64, 'base64');
       if (controller.signal.aborted || disposed) return null;

@@ -36,12 +36,20 @@ object LafinaWhisperBridge {
     System.loadLibrary("lafina_whisper")
   }
 
+  /** The bundled English model, shared by voice commands and meeting transcription. */
+  const val MODEL_ASSET = "models/ggml-tiny.en-q5_1.bin"
+
   external fun initContext(assetManager: android.content.res.AssetManager, assetPath: String): Long
   external fun transcribe(
     contextPointer: Long,
     samples: FloatArray,
     threads: Int,
     commandMode: Boolean
+  ): String
+  external fun transcribeWithTimestamps(
+    contextPointer: Long,
+    samples: FloatArray,
+    threads: Int
   ): String
   external fun freeContext(contextPointer: Long)
 }
@@ -675,6 +683,6 @@ class LafinaSpeechToTextModule(private val reactContext: ReactApplicationContext
     private const val MODE_MANUAL = "manual"
     private const val CONTEXT_MAIN_MIC = "main_mic"
     private const val CONTEXT_REMINDER_CALL = "reminder_call"
-    private const val WHISPER_MODEL_ASSET = "models/ggml-tiny.en-q5_1.bin"
+    private const val WHISPER_MODEL_ASSET = LafinaWhisperBridge.MODEL_ASSET
   }
 }

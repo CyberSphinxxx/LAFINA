@@ -82,4 +82,21 @@ describe('reminderScheduler daemon', () => {
     expect(updated?.status).toBe('pending');
     expect(DeviceEventEmitter.emit).not.toHaveBeenCalled();
   });
+
+  it('restarts, polls, and stops the daemon without leaving an old interval active', async () => {
+    jest.useFakeTimers();
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+
+    startSchedulerDaemon('user1');
+    startSchedulerDaemon('user1');
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(15000);
+    await Promise.resolve();
+    stopSchedulerDaemon();
+
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+    clearIntervalSpy.mockRestore();
+    jest.useRealTimers();
+  });
 });

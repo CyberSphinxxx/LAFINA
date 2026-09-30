@@ -34,6 +34,8 @@ jest.mock('../../src/ui/contexts/ThemeContext', () => ({
       iconMuted: '#AAAAAA',
       eventIconBg: '#F0F0FF',
       bannerBg: '#FCE4D6',
+      noteHighlightBg: '#FFF3A3',
+      noteHighlightText: '#1A1A1A',
     },
   }),
 }));

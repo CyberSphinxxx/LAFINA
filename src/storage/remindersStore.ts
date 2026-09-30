@@ -1,4 +1,5 @@
-import { db } from './database';
+import { db, DatabaseTransaction } from './database';
+import { syncOutboxStore } from './syncOutboxStore';
 
 export type ReminderStatus = 'pending' | 'triggered' | 'snoozed' | 'acknowledged' | 'missed';
 
@@ -31,6 +32,26 @@ const mapRowToReminder = (row: any): Reminder => ({
   updatedAt: row.updated_at,
   deletedAt: row.deleted_at,
 });
+
+type StoredReminderRow = Record<string, unknown>;
+
+const reminderPayload = (row: StoredReminderRow): Record<string, unknown> => ({
+  task: row.task,
+  description: row.description,
+  scheduled_at: row.scheduled_at,
+  trigger_at: row.trigger_at,
+  status: row.status,
+  snooze_count: row.snooze_count,
+});
+
+const enqueueReminderUpdate = (id: string, tx: DatabaseTransaction): void => {
+  const row = tx.executeSync('SELECT * FROM reminders WHERE id = ?', [id]).rows?.[0] as StoredReminderRow | undefined;
+  if (!row) return;
+  const userId = String(row.user_id);
+  syncOutboxStore.enqueueMutation(
+    userId, 'reminder', id, 'update', reminderPayload(row), 'account', userId, tx,
+  );
+};
 
 export const remindersStore = {
   /**
@@ -108,23 +129,33 @@ export const remindersStore = {
   insertReminder: (reminder: Omit<Reminder, 'createdAt' | 'updatedAt' | 'deletedAt' | 'snoozeCount'>): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `INSERT INTO reminders (id, user_id, task, description, scheduled_at, trigger_at, status, precast_audio_path, snooze_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          reminder.id,
-          reminder.userId,
-          reminder.task,
-          reminder.description || null,
-          reminder.scheduledAt,
-          reminder.triggerAt,
-          reminder.status,
-          reminder.preCastAudioPath || null,
-          0,
-          now,
-          now,
-        ]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `INSERT INTO reminders (id, user_id, task, description, scheduled_at, trigger_at, status, precast_audio_path, snooze_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            reminder.id,
+            reminder.userId,
+            reminder.task,
+            reminder.description || null,
+            reminder.scheduledAt,
+            reminder.triggerAt,
+            reminder.status,
+            reminder.preCastAudioPath || null,
+            0,
+            now,
+            now,
+          ],
+        );
+        syncOutboxStore.enqueueMutation(reminder.userId, 'reminder', reminder.id, 'create', {
+          task: reminder.task,
+          description: reminder.description || null,
+          scheduled_at: reminder.scheduledAt,
+          trigger_at: reminder.triggerAt,
+          status: reminder.status,
+          snooze_count: 0,
+        }, 'account', reminder.userId, tx);
+      });
     } catch (error) {
       console.error('Error inserting reminder:', error);
       throw error;
@@ -140,10 +171,13 @@ export const remindersStore = {
     }
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE reminders SET trigger_at = ?, updated_at = ? WHERE id = ?`,
-        [triggerAt, now, id]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE reminders SET trigger_at = ?, updated_at = ? WHERE id = ?`,
+          [triggerAt, now, id],
+        );
+        enqueueReminderUpdate(id, tx);
+      });
     } catch (error) {
       console.error('Error updating reminder trigger time:', error);
       throw error;
@@ -156,10 +190,13 @@ export const remindersStore = {
   updateReminderStatus: (id: string, status: ReminderStatus): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE reminders SET status = ?, updated_at = ? WHERE id = ?`,
-        [status, now, id]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE reminders SET status = ?, updated_at = ? WHERE id = ?`,
+          [status, now, id],
+        );
+        enqueueReminderUpdate(id, tx);
+      });
     } catch (error) {
       console.error('Error updating reminder status:', error);
       throw error;
@@ -187,10 +224,13 @@ export const remindersStore = {
     }
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE reminders SET status = 'snoozed', trigger_at = ?, snooze_count = snooze_count + 1, updated_at = ? WHERE id = ?`,
-        [triggerAt, now, id]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE reminders SET status = 'snoozed', trigger_at = ?, snooze_count = snooze_count + 1, updated_at = ? WHERE id = ?`,
+          [triggerAt, now, id],
+        );
+        enqueueReminderUpdate(id, tx);
+      });
     } catch (error) {
       console.error('Error snoozing reminder:', error);
       throw error;
@@ -203,10 +243,13 @@ export const remindersStore = {
   acknowledgeReminder: (id: string): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE reminders SET status = 'acknowledged', updated_at = ? WHERE id = ?`,
-        [now, id]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE reminders SET status = 'acknowledged', updated_at = ? WHERE id = ?`,
+          [now, id],
+        );
+        enqueueReminderUpdate(id, tx);
+      });
     } catch (error) {
       console.error('Error acknowledging reminder:', error);
       throw error;
@@ -235,10 +278,21 @@ export const remindersStore = {
   deleteReminder: (id: string): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE reminders SET deleted_at = ?, updated_at = ? WHERE id = ?`,
-        [now, now, id]
-      );
+      db.transactionSync((tx) => {
+        const row = tx.executeSync(
+          'SELECT user_id FROM reminders WHERE id = ?',
+          [id],
+        ).rows?.[0];
+        if (!row) return;
+        tx.executeSync(
+          `UPDATE reminders SET deleted_at = ?, updated_at = ? WHERE id = ?`,
+          [now, now, id],
+        );
+        const userId = String(row.user_id);
+        syncOutboxStore.enqueueMutation(
+          userId, 'reminder', id, 'delete', {}, 'account', userId, tx,
+        );
+      });
     } catch (error) {
       console.error('Error deleting reminder:', error);
       throw error;

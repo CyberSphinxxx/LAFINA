@@ -16,11 +16,16 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           add(LafinaVoicePackage())
         },
+      // A downloaded update, when there is one that fits this APK; otherwise
+      // the bundle inside the APK. See OtaBundles.
+      jsBundleFilePath = OtaBundles.resolveBundlePath(applicationContext),
     )
   }
 
   override fun onCreate() {
     super.onCreate()
+    // The restart helper's process only relaunches the app; it never runs React Native.
+    if (getProcessName().endsWith(LafinaRestartActivity.PROCESS_SUFFIX)) return
     loadReactNative(this)
   }
 }

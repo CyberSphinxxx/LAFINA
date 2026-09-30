@@ -310,6 +310,80 @@ const extractSingleTimeMatch = (command: string): string | null => {
   return parsedTime;
 };
 
+// --- Relative time resolution ("in 15 minutes", "half an hour from now") ---
+
+const RELATIVE_QUANTITY = '(\\d+|an?|one|half|quarter)';
+const RELATIVE_UNIT = '(seconds?|secs?|minutes?|mins?|hours?|hrs?)';
+
+// "<quantity> <unit> from now|later" e.g. "15 minutes from now", "2 hours later"
+const RELATIVE_FROM_NOW = new RegExp(
+  `\\b${RELATIVE_QUANTITY}\\s+(?:an?\\s+)?${RELATIVE_UNIT}\\s+(?:from\\s+now|later)\\b`,
+  'i',
+);
+
+// "in <quantity> <unit>" e.g. "in 15 minutes", "in half an hour"
+const RELATIVE_IN_DURATION = new RegExp(
+  `\\bin\\s+${RELATIVE_QUANTITY}\\s+(?:an?\\s+)?${RELATIVE_UNIT}\\b`,
+  'i',
+);
+
+// Non-capturing phrase matcher for stripping relative times from task titles.
+// Matches only anchored phrasings so "study for 2 hours" (a duration, not a
+// relative deadline) is left untouched.
+const RELATIVE_TIME_TEXT_PATTERN = new RegExp(
+  `\\bin\\s+(?:\\d+|an?|one|half|quarter)\\s+(?:an?\\s+)?(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\\b|\\b(?:\\d+|an?|one|half|quarter)\\s+(?:an?\\s+)?(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\\s+(?:from\\s+now|later)\\b`,
+  'gi',
+);
+
+const quantityToValue = (quantity: string): number => {
+  const lower = quantity.toLowerCase();
+  if (/^\d+$/.test(lower)) return Number(lower);
+  if (lower === 'half') return 0.5;
+  if (lower === 'quarter') return 0.25;
+  return 1; // a / an / one
+};
+
+const unitToMinutes = (unit: string): number => {
+  const lower = unit.toLowerCase();
+  if (lower.startsWith('sec')) return 1 / 60;
+  if (lower.startsWith('min')) return 1;
+  return 60; // hour(s)
+};
+
+const extractRelativeTimeMinutes = (normalized: string): number | null => {
+  const match =
+    normalized.match(RELATIVE_FROM_NOW) ?? normalized.match(RELATIVE_IN_DURATION);
+  if (!match) return null;
+  const offsetMinutes = quantityToValue(match[1]) * unitToMinutes(match[2]);
+  // Sub-minute offsets (seconds) are rounded to the nearest whole minute.
+  return Math.round(offsetMinutes);
+};
+
+/**
+ * Resolves an anchored relative-time phrase to a concrete date + time.
+ *
+ * Supports "15 minutes from now", "in 15 minutes", "half an hour from now",
+ * "2 hours later", "an hour from now", etc. Uses epoch-millis arithmetic so
+ * the result stays correct across midnight rollovers and DST transitions
+ * (naive wall-clock "+N hours" math drifts when the clock shifts).
+ */
+export const resolveRelativeTime = (
+  command: string,
+  referenceDate: Date,
+): { date: string; time: string } | null => {
+  const normalized = normalizeCommandText(command).toLowerCase();
+  const offsetMinutes = extractRelativeTimeMinutes(normalized);
+  if (offsetMinutes === null) return null;
+
+  const target = new Date(referenceDate.getTime() + offsetMinutes * 60 * 1000);
+  const hours = `${target.getHours()}`.padStart(2, '0');
+  const minutes = `${target.getMinutes()}`.padStart(2, '0');
+  return {
+    date: formatLocalDate(target),
+    time: `${hours}:${minutes}`,
+  };
+};
+
 const cleanTaskTitle = (command: string): string => {
   let title = normalizeCommandText(command);
 
@@ -339,7 +413,8 @@ const cleanTaskTitle = (command: string): string => {
   title = title
     .replace(TIME_RANGE_PATTERN, '')
     .replace(meridiemTimePattern, '')
-    .replace(clockTimePattern, '');
+    .replace(clockTimePattern, '')
+    .replace(RELATIVE_TIME_TEXT_PATTERN, '');
 
   // 4. Remove recurrence phrases
   const recurrencePattern =
@@ -382,8 +457,11 @@ export const createFallbackNluResult = (
   const trimmedCommand = command.trim();
   const lowercaseCommand = trimmedCommand.toLowerCase();
 
+  const relativeTime = resolveRelativeTime(trimmedCommand, referenceDate);
   const singleTime = extractSingleTimeMatch(trimmedCommand);
-  const date = resolveCommandDate(trimmedCommand, referenceDate, singleTime);
+  const date = relativeTime
+    ? relativeTime.date
+    : resolveCommandDate(trimmedCommand, referenceDate, singleTime);
   const range = parseTimeRange(trimmedCommand);
   const recurrence = extractRecurrencePattern(trimmedCommand);
 
@@ -433,7 +511,8 @@ export const createFallbackNluResult = (
     lowercaseCommand.includes('time block') ||
     lowercaseCommand.includes('remind me') ||
     lowercaseCommand.includes('need to') ||
-    singleTime !== null;
+    singleTime !== null ||
+    relativeTime !== null;
 
   if (isExplicitScheduling) {
     const title = cleanTaskTitle(trimmedCommand);
@@ -441,7 +520,7 @@ export const createFallbackNluResult = (
       intent: 'schedule',
       task: title,
       date,
-      time: singleTime,
+      time: relativeTime ? relativeTime.time : singleTime,
       duration_minutes: null,
       recurrence: recurrence !== 'none' ? recurrence : null,
       status: 'success',

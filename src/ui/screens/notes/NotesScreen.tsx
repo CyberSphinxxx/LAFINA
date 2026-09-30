@@ -49,6 +49,7 @@ export const NotesScreen: React.FC<NotesScreenProps> = ({
         onDragMove={data.handleDragMove}
         onDragRelease={data.handleDragRelease}
         onLayout={data.onCardLayout}
+        onToggleChecklist={data.toggleNoteChecklist}
       />
     );
   }, [data]);
@@ -161,7 +162,7 @@ export const NotesScreen: React.FC<NotesScreenProps> = ({
         aiLoading={data.aiLoading}
         aiActionType={data.aiActionType}
         onTitleChange={data.setNoteTitle}
-        onBodyChange={data.setNoteBody}
+        onBodyChange={data.changeBody}
         onCategoryChange={data.setNoteCategory}
         onPinToggle={() => data.setIsPinned(!data.isPinned)}
         onImageUriChange={data.setImageUri}
@@ -170,6 +171,7 @@ export const NotesScreen: React.FC<NotesScreenProps> = ({
         onSave={data.saveNote}
         onDelete={() => data.editingNote && data.deleteNote(data.editingNote.id)}
         onFormatting={data.applyFormatting}
+        onToggleChecklist={data.toggleEditorChecklist}
         onAttachImage={handleAttachImage}
         onRemoveImage={() => data.setImageUri(null)}
         onAiAction={data.triggerAiAction}

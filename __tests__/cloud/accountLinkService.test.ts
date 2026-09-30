@@ -122,7 +122,45 @@ describe('accountLinkService', () => {
     });
     expect(offlineResult.status).toBe('offline_only');
     expect(userStore.getUserById(offlineResult.localUserId!)?.isCloudLinked).toBe(false);
-    expect(userStore.getActiveSessionToken().accessToken).toBeNull();
+    const offlineSession = userStore.getActiveSessionToken();
+    expect(offlineSession.accessToken).toBeNull();
+    expect(offlineSession.pendingCloudCredential).toMatch(/^mock_enc_/);
+    expect(offlineSession.pendingCloudCredential).not.toContain('offline-password');
+  });
+
+  it('automatically completes a queued FastAPI link when internet returns', async () => {
+    setMockOnlineState(false);
+    const offlineResult = await accountLinkService.registerOfflineOnly({
+      username: 'Reconnect Student',
+      email: 'reconnect@ustp.edu.ph',
+      password: 'offline-password',
+    });
+    const localUserId = offlineResult.localUserId!;
+
+    setMockOnlineState(true);
+    jest.spyOn(authService, 'register').mockResolvedValue({
+      status: 'success',
+      data: cloudAuth('student_pro', 'reconnect@ustp.edu.ph'),
+    });
+    jest.spyOn(authService, 'getMe').mockResolvedValue({
+      status: 'success',
+      data: cloudProfile('student_pro', 'reconnect@ustp.edu.ph'),
+    });
+
+    const result = await accountLinkService.completeDeferredCloudLink(localUserId);
+
+    expect(result.status).toBe('success');
+    expect(authService.register).toHaveBeenCalledWith(
+      'reconnect@ustp.edu.ph',
+      'offline-password'
+    );
+    expect(userStore.getUserById(localUserId)).toMatchObject({
+      isCloudLinked: true,
+      role: 'student_pro',
+    });
+    const linkedSession = userStore.getActiveSessionToken();
+    expect(linkedSession.accessToken).toBe('cloud-access-token');
+    expect(linkedSession.pendingCloudCredential).toBeNull();
   });
 
   it('authenticates and links an existing FastAPI email with the entered password', async () => {
@@ -174,7 +212,7 @@ describe('accountLinkService', () => {
     expect(userStore.getUserByEmail('student@ustp.edu.ph')).toBeNull();
   });
 
-  it('reports a disabled cloud account without changing the local account', async () => {
+  it('keeps offline access when automatic linking finds a disabled cloud account', async () => {
     const localUserId = await userStore.register(
       'Local Student', 'student@ustp.edu.ph', 'local-password'
     );
@@ -188,12 +226,13 @@ describe('accountLinkService', () => {
       error: 'Account is disabled.',
     });
 
-    const result = await accountLinkService.createOrLinkCloudAccount(
-      localUserId,
-      'cloud-password'
+    const result = await accountLinkService.login(
+      'student@ustp.edu.ph',
+      'local-password'
     );
 
-    expect(result.status).toBe('account_disabled');
+    expect(result.status).toBe('local_only');
+    expect(result.cloudStatus).toBe('account_disabled');
     expect(result.message).toContain('disabled');
     expect(userStore.getUserById(localUserId)).toMatchObject({
       id: localUserId,
@@ -238,6 +277,10 @@ describe('accountLinkService', () => {
       status: 'auth_required',
       error: 'Invalid email or password.',
     });
+    jest.spyOn(authService, 'register').mockResolvedValue({
+      status: 'conflict',
+      error: 'Account with this email already exists.',
+    });
 
     const result = await accountLinkService.login(
       'STUDENT@USTP.EDU.PH',
@@ -252,7 +295,7 @@ describe('accountLinkService', () => {
     expect(chatStore.getMessages(localUserId).map(message => message.id)).toContain('saved-message');
   });
 
-  it('links mismatched local and cloud passwords without changing the local hash or user ID', async () => {
+  it('automatically creates and links FastAPI on the next online local sign-in', async () => {
     const localUserId = await userStore.register(
       'Local Student', 'student@ustp.edu.ph', 'local-password'
     );
@@ -273,10 +316,6 @@ describe('accountLinkService', () => {
       ]
     );
     jest.spyOn(authService, 'register').mockResolvedValue({
-      status: 'conflict',
-      error: 'Account with this email already exists.',
-    });
-    jest.spyOn(authService, 'login').mockResolvedValue({
       status: 'success',
       data: cloudAuth('student_pro'),
     });
@@ -285,15 +324,18 @@ describe('accountLinkService', () => {
       data: cloudProfile('student_pro'),
     });
 
-    const result = await accountLinkService.createOrLinkCloudAccount(
-      localUserId,
-      'different-cloud-password'
+    const result = await accountLinkService.login(
+      'student@ustp.edu.ph',
+      'local-password'
     );
 
     expect(result.status).toBe('success');
     expect(result.localUserId).toBe(localUserId);
+    expect(authService.register).toHaveBeenCalledWith(
+      'student@ustp.edu.ph',
+      'local-password'
+    );
     expect(await userStore.login('student@ustp.edu.ph', 'local-password')).not.toBeNull();
-    expect(await userStore.login('student@ustp.edu.ph', 'different-cloud-password')).toBeNull();
     expect(userStore.getUserById('cloud-account-uuid')).toBeNull();
     expect(db.executeSync('SELECT * FROM tasks WHERE id = ?', ['saved-task']).rows[0].user_id)
       .toBe(localUserId);
@@ -320,7 +362,7 @@ describe('accountLinkService', () => {
     expect(userStore.getUserById('cloud-account-uuid')).toBeNull();
   });
 
-  it.each(['student_pro', 'admin'])('allows Online Chat for a live %s role', async (role) => {
+  it.each(['student_pro', 'admin', 'business'])('allows Online Chat for a live %s role', async (role) => {
     const localUserId = await userStore.register(
       `Role ${role}`, `${role}@ustp.edu.ph`, 'local-password'
     );
@@ -329,6 +371,37 @@ describe('accountLinkService', () => {
     jest.spyOn(authService, 'getMe').mockResolvedValue({
       status: 'success',
       data: cloudProfile(role, `${role}@ustp.edu.ph`),
+    });
+
+    const result = await accountLinkService.authorizeOnlineMode(localUserId);
+    expect(result.status).toBe('success');
+  });
+
+  it('allows Online Chat for an employee with an active business session', async () => {
+    const localUserId = await userStore.register(
+      'Role Employee', 'employee@ustp.edu.ph', 'local-password'
+    );
+    userStore.setCurrentUser(localUserId);
+    userStore.saveSessionTokens(localUserId, 'access-token', 'encrypted-refresh-token');
+    jest.spyOn(authService, 'getMe').mockResolvedValue({
+      status: 'success',
+      data: {
+        id: 'cloud-uuid-emp',
+        email: 'employee@ustp.edu.ph',
+        role: 'student',
+        subscription_plan: 'student',
+        effective_subscription_plan: 'business',
+        business_session: {
+          business_id: 'biz-123',
+          business_name: 'Tech Corp',
+          member_role: 'employee',
+          membership_status: 'active',
+          lease_expires_at: '2099-01-01T00:00:00Z',
+          capabilities: ['business_chat'],
+        },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      },
     });
 
     const result = await accountLinkService.authorizeOnlineMode(localUserId);
@@ -367,6 +440,7 @@ describe('accountLinkService', () => {
       userId: localUserId,
       accessToken: null,
       refreshToken: null,
+      pendingCloudCredential: null,
     });
     expect(userStore.getUserById(localUserId)).not.toBeNull();
   });

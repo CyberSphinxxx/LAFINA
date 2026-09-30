@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Installing its own updates (a new APK); Android asks the person to allow it once. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
       android:name=".MainApplication"
@@ -38,6 +40,20 @@
         </intent-filter>
       </activity>
 
+      <!-- Restarts the app after an in-app update; see LafinaRestartActivity. -->
+      <activity
+        android:name=".LafinaRestartActivity"
+        android:process=":restart"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:excludeFromRecents="true"
+        android:noHistory="true"
+        android:exported="false" />
+
+      <!-- Android's package installer reports on an in-app APK update here. -->
+      <receiver
+        android:name=".LafinaApkInstallReceiver"
+        android:exported="false" />
+
       <receiver
         android:name=".LafinaReminderReceiver"
         android:enabled="true"
@@ -51,8 +67,19 @@
         </intent-filter>
       </receiver>
 
+      <receiver
+        android:name=".LafinaTimerAlarmReceiver"
+        android:enabled="true"
+        android:exported="false" />
+
       <service
         android:name=".LafinaReminderService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="microphone" />
+
+      <service
+        android:name=".LafinaMeetingService"
         android:enabled="true"
         android:exported="false"
         android:foregroundServiceType="microphone" />

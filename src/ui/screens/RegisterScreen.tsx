@@ -6,7 +6,6 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   ScrollView,
-  StatusBar,
   Alert,
 } from 'react-native';
 import { Mail, Lock, User } from 'lucide-react-native';
@@ -29,10 +28,10 @@ interface RegisterScreenProps {
 }
 
 const getThemedStyles = (colors: ThemeColors) => ({
-  container: { backgroundColor: colors.background },
   card: { backgroundColor: colors.cardBg },
   cardTitle: { color: colors.textPrimary },
   cardSubtitle: { color: colors.textSecondary },
+  link: { color: colors.blue },
   fieldLabel: { color: colors.textPrimary },
   inputContainer: { borderColor: colors.border, backgroundColor: colors.inputBg },
   input: { color: colors.textPrimary },
@@ -52,7 +51,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const { colors } = useTheme();
-  const themed = useThemedStyles((c) => getThemedStyles(c));
+  const themed = useThemedStyles(getThemedStyles);
 
   const completeRegistration = (userId: string, message?: string) => {
     if (message) {
@@ -150,16 +149,13 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
   return (
     <KeyboardAvoidingView
       behavior={'height'}
-      style={[styles.container, themed.container]}
+      style={styles.container}
     >
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} />
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-
-        {/* Header Section */}
-        <AuthHeader />
 
         {/* Card Form */}
         <View style={[styles.card, Shadows.card, themed.card]}>
+          <AuthHeader />
           <Text style={[styles.cardTitle, themed.cardTitle]}>Create Account</Text>
           <Text style={[styles.cardSubtitle, themed.cardSubtitle]}>Get started with your smart study companion</Text>
 
@@ -214,14 +210,14 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
             onPress={handleRegister}
             loading={loading}
           />
-        </View>
 
-        {/* Footer Navigation */}
-        <View style={styles.footer}>
-          <Text style={[styles.footerText, themed.footerText]}>Already have an account? </Text>
-          <TouchableOpacity onPress={onNavigateToLogin}>
-            <Text style={styles.loginLink}>Log In</Text>
-          </TouchableOpacity>
+          {/* Footer Navigation */}
+          <View style={styles.footer}>
+            <Text style={[styles.footerText, themed.footerText]}>Already have an account? </Text>
+            <TouchableOpacity onPress={onNavigateToLogin}>
+              <Text style={[styles.loginLink, themed.link]}>Log In</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
       </ScrollView>
@@ -247,10 +243,12 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.heading,
     fontSize: 20,
     fontWeight: 'bold',
+    textAlign: 'center',
   },
   cardSubtitle: {
     fontFamily: Fonts.body,
     fontSize: 13,
+    textAlign: 'center',
     marginTop: 4,
     marginBottom: 20,
   },
@@ -272,7 +270,6 @@ const styles = StyleSheet.create({
   },
   loginLink: {
     fontFamily: Fonts.body,
-    color: Colors.red,
     fontWeight: 'bold',
     fontSize: 14,
     textDecorationLine: 'underline',

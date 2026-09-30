@@ -13,12 +13,37 @@ import {
   Vibration,
   Animated,
 } from 'react-native';
-import { Pin, Bold, Italic, CheckSquare, Image as ImageIcon, X, Plus, Trash, Edit } from 'lucide-react-native';
+import {
+  Bold,
+  CheckSquare,
+  Code,
+  Edit,
+  Eye,
+  Heading1,
+  Heading2,
+  Highlighter,
+  Image as ImageIcon,
+  IndentDecrease,
+  IndentIncrease,
+  Italic,
+  List,
+  ListChecks,
+  PenLine,
+  Pencil,
+  Pin,
+  Plus,
+  Quote,
+  Sparkles,
+  Trash,
+  X,
+} from 'lucide-react-native';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { Colors } from '../../../theme';
 import { getLocalImage } from './NoteCard';
+import { NoteBody } from './NoteBody';
 import { getCategoryColor } from '../../../theme/categoryColors';
 import type { Note } from '../../../../storage';
+import type { NoteFormat } from '../../../../utils';
 
 interface NoteEditorProps {
   visible: boolean;
@@ -41,7 +66,8 @@ interface NoteEditorProps {
   onClose: () => void;
   onSave: () => void;
   onDelete: () => void;
-  onFormatting: (type: 'bold' | 'italic' | 'checklist') => void;
+  onFormatting: (type: NoteFormat) => void;
+  onToggleChecklist: (index: number) => void;
   onAttachImage: () => void;
   onRemoveImage: () => void;
   onAiAction: (action: 'summarize' | 'clean' | 'tasks') => void;
@@ -122,6 +148,41 @@ const DraggableCategoryChip: React.FC<DraggableCategoryChipProps> = ({
   );
 };
 
+/**
+ * The formatting the desktop offers, less what a plain text field cannot send
+ * back to it: underline, strikethrough, text colour and links have no place in
+ * the shared dialect, and dividers and numbered lists are written by the
+ * desktop but not read back by it, so offering them here would only produce
+ * notes that degrade on the way over.
+ */
+const TOOLBAR_BUTTONS: {
+  format: NoteFormat;
+  label: string;
+  icon: React.ComponentType<{ size: number; color: string }>;
+}[] = [
+  { format: 'bold', label: 'Bold', icon: Bold },
+  { format: 'italic', label: 'Italic', icon: Italic },
+  { format: 'highlight', label: 'Highlight', icon: Highlighter },
+  { format: 'code', label: 'Code', icon: Code },
+  { format: 'h1', label: 'Heading', icon: Heading1 },
+  { format: 'h2', label: 'Subheading', icon: Heading2 },
+  { format: 'checklist', label: 'Checklist', icon: CheckSquare },
+  { format: 'bullet', label: 'Bullet list', icon: List },
+  { format: 'quote', label: 'Quote', icon: Quote },
+  { format: 'indent', label: 'Indent item', icon: IndentIncrease },
+  { format: 'outdent', label: 'Outdent item', icon: IndentDecrease },
+];
+
+const AI_ACTIONS: {
+  action: 'summarize' | 'clean' | 'tasks';
+  label: string;
+  icon: React.ComponentType<{ size: number; color: string }>;
+}[] = [
+  { action: 'summarize', label: 'Summarize', icon: Sparkles },
+  { action: 'clean', label: 'Clean Up', icon: PenLine },
+  { action: 'tasks', label: 'Extract Tasks', icon: ListChecks },
+];
+
 const COLOR_OPTIONS = [
   '#3498DB', // Blue
   '#2ECC71', // Green
@@ -138,10 +199,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   isPinned, imageUri, selection, aiLoading, aiActionType,
   onTitleChange, onBodyChange, onCategoryChange, onPinToggle,
   onSelectionChange, onClose: _onClose, onSave, onDelete,
-  onFormatting, onAttachImage, onRemoveImage, onAiAction,
+  onFormatting, onToggleChecklist, onAttachImage, onRemoveImage, onAiAction,
   customCategories = [], onAddCategory, onDeleteCategory, onUpdateCategory,
 }) => {
   const { colors } = useTheme();
+
+  /** False while writing, true while reading — where to-dos can be ticked. */
+  const [preview, setPreview] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [newCatName, setNewCatName] = useState('');
@@ -480,39 +544,88 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             </View>
           )}
 
-          {/* Toolbar */}
+          {/* Toolbar: the desktop's formatting set, minus what a plain text
+              field cannot carry back to it. */}
           <View style={[styles.editorToolbar, { borderColor: colors.border }]}>
-            <TouchableOpacity onPress={() => onFormatting('bold')} style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }]} activeOpacity={0.7}>
-              <Bold size={16} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => onFormatting('italic')} style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }]} activeOpacity={0.7}>
-              <Italic size={16} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => onFormatting('checklist')} style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }]} activeOpacity={0.7}>
-              <CheckSquare size={16} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={imageUri ? onRemoveImage : onAttachImage}
-              style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }, styles.imageToolbarBtn, imageUri && { backgroundColor: Colors.red }]}
-              activeOpacity={0.7}
-            >
-              <ImageIcon size={16} color={imageUri ? colors.white : colors.textPrimary} style={{ marginRight: 4 }} />
-              <Text style={[styles.imageToolbarText, { color: colors.textPrimary }, imageUri && { color: colors.white, fontWeight: 'bold' }]}>
-                {imageUri ? 'Remove Image' : 'Image'}
-              </Text>
-            </TouchableOpacity>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {TOOLBAR_BUTTONS.map(({ format, label, icon: Icon }) => (
+                <TouchableOpacity
+                  key={format}
+                  onPress={() => onFormatting(format)}
+                  style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }]}
+                  activeOpacity={0.7}
+                  disabled={preview}
+                  accessibilityRole="button"
+                  accessibilityLabel={label}
+                  accessibilityState={{ disabled: preview }}
+                >
+                  <Icon size={16} color={preview ? colors.textMuted : colors.textPrimary} />
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                onPress={imageUri ? onRemoveImage : onAttachImage}
+                style={[styles.toolbarBtn, { backgroundColor: colors.inputBg }, styles.imageToolbarBtn, imageUri && { backgroundColor: Colors.red }]}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={imageUri ? 'Remove image' : 'Add image'}
+              >
+                <ImageIcon size={16} color={imageUri ? colors.white : colors.textPrimary} style={{ marginRight: 4 }} />
+                <Text style={[styles.imageToolbarText, { color: colors.textPrimary }, imageUri && { color: colors.white, fontWeight: 'bold' }]}>
+                  {imageUri ? 'Remove Image' : 'Image'}
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
 
-          <TextInput
-            style={[styles.editorBodyInput, { color: colors.textPrimary }]}
-            placeholder="Start writing..."
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            value={noteBody}
-            onChangeText={onBodyChange}
-            selection={selection}
-            onSelectionChange={(e) => onSelectionChange(e.nativeEvent.selection)}
-          />
+          {/* Write or read. Ticking a box needs the note drawn rather than
+              typed, which a single text field cannot do. */}
+          <View style={[styles.modeRow, { borderColor: colors.border }]}>
+            {([false, true] as const).map((wantsPreview) => (
+              <TouchableOpacity
+                key={wantsPreview ? 'preview' : 'write'}
+                onPress={() => setPreview(wantsPreview)}
+                style={[
+                  styles.modeBtn,
+                  preview === wantsPreview && { backgroundColor: Colors.blue },
+                ]}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: preview === wantsPreview }}
+              >
+                {wantsPreview ? (
+                  <Eye size={13} color={preview ? colors.white : colors.textSecondary} />
+                ) : (
+                  <Pencil size={13} color={preview ? colors.textSecondary : colors.white} />
+                )}
+                <Text
+                  style={[
+                    styles.modeText,
+                    { color: colors.textSecondary },
+                    preview === wantsPreview && { color: colors.white, fontWeight: 'bold' },
+                  ]}
+                >
+                  {wantsPreview ? 'Preview' : 'Write'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {preview ? (
+            <View style={styles.editorPreview} testID="note-preview">
+              <NoteBody body={noteBody} onToggleChecklist={onToggleChecklist} />
+            </View>
+          ) : (
+            <TextInput
+              style={[styles.editorBodyInput, { color: colors.textPrimary }]}
+              placeholder="Start writing..."
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              value={noteBody}
+              onChangeText={onBodyChange}
+              selection={selection}
+              onSelectionChange={(e) => onSelectionChange(e.nativeEvent.selection)}
+            />
+          )}
         </ScrollView>
 
         {/* AI Loader */}
@@ -523,17 +636,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </View>
         )}
 
-        {/* AI Actions */}
+        {/* AI Actions — same icons as the desktop's AI strip. */}
         <View style={[styles.aiActionsStrip, { backgroundColor: colors.cardBg }]}>
-          <TouchableOpacity onPress={() => onAiAction('summarize')} style={[styles.aiActionBtn, { backgroundColor: colors.inputBg }]}>
-            <Text style={styles.aiActionBtnText}>✨ Summarize</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => onAiAction('clean')} style={[styles.aiActionBtn, { backgroundColor: colors.inputBg }]}>
-            <Text style={styles.aiActionBtnText}>✍ Clean Up</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => onAiAction('tasks')} style={[styles.aiActionBtn, { backgroundColor: colors.inputBg }]}>
-            <Text style={styles.aiActionBtnText}>📋 Extract Tasks</Text>
-          </TouchableOpacity>
+          {AI_ACTIONS.map(({ action, label, icon: Icon }) => (
+            <TouchableOpacity
+              key={action}
+              onPress={() => onAiAction(action)}
+              style={[styles.aiActionBtn, { backgroundColor: colors.inputBg }]}
+              accessibilityRole="button"
+              accessibilityLabel={label}
+            >
+              <Icon size={13} color={Colors.yellow} />
+              <Text style={styles.aiActionBtnText}>{label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         {draggingCat && (
@@ -574,8 +690,12 @@ const styles = StyleSheet.create({
   categoryEditorRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   categoryLabel: { fontSize: 12, marginRight: 8 },
   catChipSmall: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, borderWidth: 1, marginRight: 4 },
-  editorToolbar: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderBottomWidth: 1, paddingVertical: 6, marginBottom: 12 },
+  editorToolbar: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderBottomWidth: 1, paddingVertical: 6 },
   toolbarBtn: { padding: 8, marginRight: 8, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  modeRow: { flexDirection: 'row', alignSelf: 'flex-start', borderWidth: 1, borderRadius: 10, overflow: 'hidden', marginTop: 10, marginBottom: 12 },
+  modeBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6 },
+  modeText: { fontSize: 12, fontFamily: 'sans-serif', marginLeft: 5 },
+  editorPreview: { minHeight: 400, paddingBottom: 8 },
   imageToolbarBtn: { flexDirection: 'row', paddingHorizontal: 12 },
   imageToolbarText: { fontSize: 12, fontFamily: 'sans-serif' },
   editorImageContainer: { position: 'relative', marginVertical: 12, borderRadius: 12, overflow: 'hidden', borderWidth: 1, height: 180, width: '100%' },
@@ -585,8 +705,8 @@ const styles = StyleSheet.create({
   aiLoadingOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center', alignItems: 'center', zIndex: 100 },
   aiLoadingText: { marginTop: 12, fontWeight: 'bold', fontFamily: 'sans-serif' },
   aiActionsStrip: { flexDirection: 'row', paddingTop: 10, paddingBottom: 10, paddingHorizontal: 12, justifyContent: 'space-between' },
-  aiActionBtn: { flex: 1, borderRadius: 8, paddingVertical: 8, marginHorizontal: 4, alignItems: 'center' },
-  aiActionBtnText: { color: Colors.yellow, fontSize: 11, fontWeight: 'bold', fontFamily: 'sans-serif' },
+  aiActionBtn: { flex: 1, flexDirection: 'row', borderRadius: 8, paddingVertical: 8, marginHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  aiActionBtnText: { color: Colors.yellow, fontSize: 11, fontWeight: 'bold', fontFamily: 'sans-serif', marginLeft: 5 },
   catScroll: { flexDirection: 'row', alignItems: 'center', paddingRight: 16 },
   addCatBtn: { padding: 4, borderRadius: 8, borderWidth: 1, justifyContent: 'center', alignItems: 'center', minWidth: 28, height: 22 },
   modalOverlay: {

@@ -23,10 +23,74 @@ export interface CloudResult<T> {
 
 let inMemoryAccessToken: string | null = null;
 let inMemoryUserId: string | null = null;
-let apiBaseUrl: string = 'http://10.0.2.2:8000'; // Render production endpoint or localhost dev URL
-const androidConnectivityModule = NativeModules.AndroidConnectivityModule as
-  | { isOnline: () => Promise<boolean> }
-  | undefined;
+export const CLOUD_API_BASE_URL = 'https://lafina.onrender.com';
+export const LOCAL_API_BASE_URL = 'http://127.0.0.1:8000';
+
+/**
+ * Where requests go, in order. The local server is a development convenience
+ * (a backend on the PC, reached through `adb reverse`) and is never tried by a
+ * release build: on a phone 127.0.0.1 is the phone itself, reached over plain
+ * HTTP, so any app on it could listen there, read a password sent while
+ * Render was down, and answer as if it were LAFINA.
+ */
+export const apiBaseUrlsFor = (isDevelopment: boolean): readonly string[] =>
+  isDevelopment ? [CLOUD_API_BASE_URL, LOCAL_API_BASE_URL] : [CLOUD_API_BASE_URL];
+
+const defaultApiBaseUrls: readonly string[] = apiBaseUrlsFor(
+  typeof __DEV__ !== 'undefined' && __DEV__
+);
+let apiBaseUrls: readonly string[] = defaultApiBaseUrls;
+interface AndroidConnectivityModule {
+  isOnline: () => Promise<boolean>;
+  /** Absent in APKs built before the DNS check. */
+  canResolve?: (host: string) => Promise<boolean>;
+}
+
+const androidConnectivity = (): AndroidConnectivityModule | undefined =>
+  NativeModules.AndroidConnectivityModule as AndroidConnectivityModule | undefined;
+
+/** Longer than a working lookup takes; a DNS server that is not answering never gets there. */
+const DNS_CHECK_TIMEOUT_MS = 5_000;
+
+const hostOf = (baseUrl: string): string => baseUrl.replace(/^[a-z]+:\/\//i, '').replace(/[/:].*$/, '');
+
+/**
+ * Whether the device can look up `host`: true, false, or null when it cannot
+ * tell (no native check in this build). A lookup that has not answered within
+ * the timeout counts as failed — a DNS server that slow is not answering.
+ */
+const canResolveHost = async (host: string): Promise<boolean | null> => {
+  const connectivity = Platform.OS === 'android' ? androidConnectivity() : undefined;
+  if (!connectivity?.canResolve) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      connectivity.canResolve(host),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), DNS_CHECK_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/**
+ * Why a request got no answer at all, in words that point at the fix. React
+ * Native reports every such failure as "Network request failed", so the cause
+ * is checked separately: most often it is a network whose DNS has stopped
+ * answering while the connection itself is up.
+ */
+const describeConnectionFailure = async (baseUrl: string, error: unknown): Promise<string> => {
+  const host = hostOf(baseUrl);
+  if ((await canResolveHost(host)) === false) {
+    return `This device can't look up ${host}: the connection is up, but its DNS isn't answering. Check the Wi-Fi or mobile data (on an emulator, restart it).`;
+  }
+  const reason = error instanceof Error && error.message ? error.message : 'no response';
+  return `LAFINA's server at ${host} didn't answer (${reason}).`;
+};
 
 let isOnlineMockState: boolean | null = null;
 
@@ -35,8 +99,19 @@ export const setMockOnlineState = (online: boolean | null) => {
 };
 
 export const cloudClient = {
+  /** Overrides endpoint failover for local development and isolated tests. */
   setBaseUrl: (url: string) => {
-    apiBaseUrl = url;
+    apiBaseUrls = [url.replace(/\/+$/, '')];
+  },
+
+  /** Returns the currently configured primary FastAPI endpoint. */
+  getBaseUrl: (): string => {
+    return apiBaseUrls[0];
+  },
+
+  /** Restores the deployed-cloud-first endpoint order. */
+  resetBaseUrls: (): void => {
+    apiBaseUrls = defaultApiBaseUrls;
   },
 
   /** Persists a replacement access token for the active local user. */
@@ -127,9 +202,10 @@ export const cloudClient = {
     if (isOnlineMockState !== null) {
       return isOnlineMockState;
     }
-    if (Platform.OS === 'android' && androidConnectivityModule) {
+    const connectivity = Platform.OS === 'android' ? androidConnectivity() : undefined;
+    if (connectivity) {
       try {
-        return await androidConnectivityModule.isOnline();
+        return await connectivity.isOnline();
       } catch {
         return false;
       }
@@ -164,57 +240,82 @@ export const cloudClient = {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    try {
-      const response = await fetch(`${apiBaseUrl}${endpoint}`, {
-        ...options,
-        headers,
-      });
+    let response: Response | null = null;
+    let lastConnectionError: unknown = null;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: null }));
-        const detail =
-          typeof errorData.detail === 'string' ? errorData.detail : 'FastAPI request failed.';
+    for (let index = 0; index < apiBaseUrls.length; index += 1) {
+      const baseUrl = apiBaseUrls[index];
+      const hasFallback = index < apiBaseUrls.length - 1;
 
-        if (response.status === 401) {
-          return {
-            status: 'auth_required',
-            error: requiresAuth ? 'Cloud session expired. Sign in or link again.' : detail,
-            httpStatus: response.status,
-          };
+      try {
+        const candidateResponse = await fetch(`${baseUrl}${endpoint}`, {
+          ...options,
+          headers,
+        });
+
+        const isTemporarilyUnavailable = [502, 503, 504].includes(candidateResponse.status);
+        if (isTemporarilyUnavailable && hasFallback) {
+          continue;
         }
-        if (response.status === 403) {
-          const isDisabled = detail.toLowerCase().includes('disabled');
-          return {
-            status: isDisabled ? 'account_disabled' : 'subscription_required',
-            error: detail,
-            httpStatus: response.status,
-          };
+
+        response = candidateResponse;
+        break;
+      } catch (error: unknown) {
+        lastConnectionError = error;
+        if (!hasFallback) {
+          break;
         }
-        if (response.status === 409) {
-          return { status: 'conflict', error: detail, httpStatus: response.status };
-        }
-        if (response.status === 429) {
-          return { status: 'rate_limited', error: detail, httpStatus: response.status };
-        }
-        if (response.status >= 500) {
-          return {
-            status: 'server_error',
-            error: 'FastAPI encountered a server error. Please try again.',
-            httpStatus: response.status,
-          };
-        }
-        return { status: 'validation_error', error: detail, httpStatus: response.status };
       }
-
-      const data = await response.json().catch(() => ({}));
-      return { status: 'success', data: data as T, httpStatus: response.status };
-    } catch (error: unknown) {
-      return {
-        status: 'server_unavailable',
-        error: error instanceof Error
-          ? `FastAPI server unavailable: ${error.message}`
-          : 'FastAPI server unavailable.',
-      };
     }
+
+    if (!response) {
+      const reason = await describeConnectionFailure(apiBaseUrls[0], lastConnectionError);
+      console.warn(`[cloud] ${options.method || 'GET'} ${endpoint} got no response: ${reason}`);
+      return { status: 'server_unavailable', error: reason };
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: null }));
+      const detail =
+        typeof errorData.detail === 'string' ? errorData.detail : 'FastAPI request failed.';
+
+      if (response.status === 401) {
+        return {
+          status: 'auth_required',
+          error: requiresAuth ? 'Cloud session expired. Sign in again while online.' : detail,
+          httpStatus: response.status,
+        };
+      }
+      if (response.status === 403) {
+        const isDisabled = detail.toLowerCase().includes('disabled');
+        return {
+          status: isDisabled ? 'account_disabled' : 'subscription_required',
+          error: detail,
+          httpStatus: response.status,
+        };
+      }
+      if (response.status === 409) {
+        return { status: 'conflict', error: detail, httpStatus: response.status };
+      }
+      if (response.status === 429) {
+        return { status: 'rate_limited', error: detail, httpStatus: response.status };
+      }
+      if (response.status >= 500) {
+        // Say which call failed and what the server said, as the desktop app
+        // does: a generic line leaves a server-side fault undiagnosable.
+        console.error(`[cloud] ${options.method || 'GET'} ${endpoint} -> ${response.status}: ${detail}`);
+        return {
+          status: 'server_error',
+          error: `LAFINA's server had a problem (${response.status} on ${endpoint}${
+            typeof errorData.detail === 'string' ? `: ${detail}` : ''
+          }). Please try again.`,
+          httpStatus: response.status,
+        };
+      }
+      return { status: 'validation_error', error: detail, httpStatus: response.status };
+    }
+
+    const data = await response.json().catch(() => ({}));
+    return { status: 'success', data: data as T, httpStatus: response.status };
   }
 };

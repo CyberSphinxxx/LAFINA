@@ -89,6 +89,16 @@ const createTheme = (isDarkMode: boolean) => ({
     iconMuted: '#AAAAAA',
     eventIconBg: '#F0F0FF',
     bannerBg: '#FCE4D6',
+    noteHighlightBg: '#FFF3A3',
+    noteHighlightText: '#1A1A1A',
+    proGradientStart: '#FF4D00',
+    proGradientMid: '#C2006A',
+    proGradientEnd: '#6B00C9',
+    authGradientYellow: '#F8E81C',
+    authGradientCrimson: '#D8163F',
+    authGradientBlue: '#2A10F0',
+    authVeil: 'rgba(255, 255, 255, 0.12)',
+    holiday: '#0B8043',
   },
 });
 
@@ -325,6 +335,7 @@ describe('incoming reminder call presentation', () => {
     expect(schedulerMock.declineCall).toHaveBeenCalledWith(
       'rem-call-ui',
       'student-1',
+      expect.any(Object),
     );
     expect(onClose).toHaveBeenCalledTimes(1);
 

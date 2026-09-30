@@ -302,6 +302,22 @@ const formatUtcTime = (date: Date): string => {
   return `${h}:${m}`;
 };
 
+/**
+ * What a VEVENT becomes on import.
+ *
+ * LAFINA labels everything it exports with `X-LAFINA-TYPE`, so a file from
+ * this app round-trips exactly. Nothing else does: a calendar subscribed from
+ * Google, Outlook or a university timetable is all unlabelled VEVENTs, and
+ * those are blocks of time on a schedule — a class, a shift, a meeting — not
+ * the dateless "Event" an unlabelled import used to produce.
+ */
+const veventType = (xLafinaType: string | null | undefined): 'event' | 'time_block' =>
+  (xLafinaType ?? '').trim().toLowerCase() === 'event' ? 'event' : 'time_block';
+
+/** True when the file said what this is, rather than leaving it to be guessed. */
+const isLafinaLabelled = (xLafinaType: string | null | undefined): boolean =>
+  ['event', 'time_block'].includes((xLafinaType ?? '').trim().toLowerCase());
+
 const resolveDtend = (vevent: any, dtstart: Date): Date => {
   if (vevent.dtend && vevent.dtend.value) {
     return parseIcsToUtcDate(vevent.dtend.value);
@@ -452,12 +468,17 @@ export const parseIcsString = (
 
   // Process VEVENTs
   for (const vevent of nonOverrides) {
-    const type = vevent.xLafinaType || 'event';
+    const type = veventType(vevent.xLafinaType);
     const uid = vevent.uid || 'imported_' + Math.random().toString(36).substring(2, 9);
     const summary = unescapeText(vevent.summary || 'Untitled');
     const location = vevent.location ? unescapeText(vevent.location) : null;
     const color = vevent.xLafinaColor || '#2196F3';
-    const category = unescapeText(vevent.categories || (type === 'time_block' ? 'Work' : ''));
+    // A LAFINA block with no CATEGORIES was a "Work" block. A foreign entry
+    // gets no category here, so the import files it under "Imported" instead
+    // of quietly claiming it as work.
+    const categoryDefault =
+      type === 'time_block' && isLafinaLabelled(vevent.xLafinaType) ? 'Work' : '';
+    const category = unescapeText(vevent.categories || categoryDefault);
     const notes = vevent.description ? unescapeText(vevent.description) : undefined;
     const rrule = vevent.rrule || null;
 
@@ -531,7 +552,7 @@ export const parseIcsString = (
     const overrideUid = override.uid;
     if (!overrideUid || !override.recurrenceId || !override.recurrenceId.value) continue;
     const overrideDate = parseIcsToUtcDate(override.recurrenceId.value);
-    const type = override.xLafinaType || 'event';
+    const type = veventType(override.xLafinaType);
 
     if (type === 'time_block') {
       const idx = blocks.findIndex(

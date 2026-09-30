@@ -236,7 +236,9 @@ export const IncomingCallScreen: React.FC<IncomingCallScreenProps> = ({
   const handleDecline = useCallback(async (): Promise<void> => {
     Vibration.cancel();
     try {
-      await declineCall(reminderId, userId);
+      const speechProvider =
+        speechProviderRef.current || createCallSpeechProvider(userId);
+      await declineCall(reminderId, userId, speechProvider);
     } catch (error) {
       console.error('[CallScreen] Could not end reminder call:', error);
     } finally {

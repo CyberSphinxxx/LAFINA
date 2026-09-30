@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, FlatList } from 'react-native';
-import { Colors, Fonts, Shadows } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Colors, Fonts, Shadows, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 import { Task, Event } from '../../../storage/tasksStore';
 import { TimeBlock } from '../../../storage/timeBlocksStore';
 import { Check, Users } from 'lucide-react-native';
@@ -63,7 +63,7 @@ export const WeekView: React.FC<WeekViewProps> = ({
   onToggleTaskCompletion,
   onEditBlock,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   return (
     <View style={[styles.weekViewContainer, themed.weekViewContainer]}>
@@ -399,69 +399,66 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors, isDarkMode } = useTheme();
-  return {
-    weekViewContainer: {
-      backgroundColor: colors.background,
-    },
-    scrollerContainer: {
-      borderBottomColor: colors.border,
-    },
-    datePill: {
-      backgroundColor: colors.cardBg,
-    },
-    pillDayName: {
-      color: colors.textSecondary,
-    },
-    pillDayNum: {
-      color: colors.textPrimary,
-    },
-    overdueBanner: {
-      backgroundColor: isDarkMode ? 'rgba(231, 76, 60, 0.15)' : '#FDEDEC',
-    },
-    overdueChip: {
-      backgroundColor: colors.inputBg,
-    },
-    overdueChipText: {
-      color: colors.textPrimary,
-    },
-    emptyState: {
-      backgroundColor: colors.background,
-    },
-    emptyTitle: {
-      color: colors.textPrimary,
-    },
-    emptySubtitle: {
-      color: colors.textSecondary,
-    },
-    card: {
-      backgroundColor: colors.cardBg,
-    },
-    checkbox: {
-      borderColor: colors.border,
-    },
-    checkboxChecked: {
-      backgroundColor: Colors.success,
-      borderColor: Colors.success,
-    },
-    cardTitle: {
-      color: colors.textPrimary,
-    },
-    cardTime: {
-      color: colors.textSecondary,
-    },
-    eventIconContainer: {
-      backgroundColor: isDarkMode ? 'rgba(52, 152, 219, 0.15)' : '#EBF5FB',
-    },
-    blockBandCard: {
-      backgroundColor: colors.cardBg,
-    },
-    blockBandTitle: {
-      color: colors.textPrimary,
-    },
-    blockBandTime: {
-      color: colors.textSecondary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
+  weekViewContainer: {
+    backgroundColor: colors.background,
+  },
+  scrollerContainer: {
+    borderBottomColor: colors.border,
+  },
+  datePill: {
+    backgroundColor: colors.cardBg,
+  },
+  pillDayName: {
+    color: colors.textSecondary,
+  },
+  pillDayNum: {
+    color: colors.textPrimary,
+  },
+  overdueBanner: {
+    backgroundColor: isDarkMode ? 'rgba(231, 76, 60, 0.15)' : '#FDEDEC',
+  },
+  overdueChip: {
+    backgroundColor: colors.inputBg,
+  },
+  overdueChipText: {
+    color: colors.textPrimary,
+  },
+  emptyState: {
+    backgroundColor: colors.background,
+  },
+  emptyTitle: {
+    color: colors.textPrimary,
+  },
+  emptySubtitle: {
+    color: colors.textSecondary,
+  },
+  card: {
+    backgroundColor: colors.cardBg,
+  },
+  checkbox: {
+    borderColor: colors.border,
+  },
+  checkboxChecked: {
+    backgroundColor: Colors.success,
+    borderColor: Colors.success,
+  },
+  cardTitle: {
+    color: colors.textPrimary,
+  },
+  cardTime: {
+    color: colors.textSecondary,
+  },
+  eventIconContainer: {
+    backgroundColor: isDarkMode ? 'rgba(52, 152, 219, 0.15)' : '#EBF5FB',
+  },
+  blockBandCard: {
+    backgroundColor: colors.cardBg,
+  },
+  blockBandTitle: {
+    color: colors.textPrimary,
+  },
+  blockBandTime: {
+    color: colors.textSecondary,
+  },
+});

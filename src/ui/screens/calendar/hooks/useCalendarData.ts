@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import { ViewMode, CalendarData, FeedItem } from '../types';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { ViewMode, CalendarData } from '../types';
 import type { TimeBlock, Task, Event } from '../../../../storage';
-import { timeBlocksStore, tasksStore, userStore, db } from '../../../../storage';
-import { Colors } from '../../../theme';
+import { timeBlocksStore, tasksStore, userStore } from '../../../../storage';
 
 import { importedBatchesStore, ImportBatch } from '../../../../storage/importedBatchesStore';
 import { calendarVisibilityStore } from '../../../../storage/calendarVisibilityStore';
@@ -11,8 +10,11 @@ import { generateIcsString, parseIcsString } from '../../../../storage/icsHelper
 import { pick, isErrorWithCode, errorCodes } from '@react-native-documents/picker';
 import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
-import { generateId } from '../../../../utils';
 import { Alert } from 'react-native';
+import {
+  persistImportedCalendarBatch,
+  removeImportedCalendarBatch,
+} from './calendarImportPersistence';
 
 interface UseCalendarDataOptions {
   userId: string;
@@ -24,7 +26,6 @@ interface UseCalendarDataOptions {
 
 export const useCalendarData = (options: UseCalendarDataOptions): CalendarData & {
   getOverdueTasks: () => Task[];
-  getChronologicalFeed: () => FeedItem[];
 } => {
   const { userId, refreshTrigger, onRefresh, propViewMode, propOnViewModeChange } = options;
 
@@ -48,6 +49,8 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
   const [visibilityMap, setVisibilityMap] = useState<Record<string, boolean>>({ main: true });
   const [username, setUsername] = useState('Main Calendar');
   const [layersModalVisible, setLayersModalVisible] = useState(false);
+  const activeUserIdRef = useRef(userId);
+  activeUserIdRef.current = userId;
 
   const generateWeekDays = useCallback(() => {
     const days: Date[] = [];
@@ -69,8 +72,11 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
 
   const loadImportsAndVisibility = useCallback(async () => {
     try {
-      const fetchedBatches = await importedBatchesStore.getImportedBatches();
-      const fetchedVisibility = await calendarVisibilityStore.getVisibilityMap();
+      const [fetchedBatches, fetchedVisibility] = await Promise.all([
+        importedBatchesStore.getImportedBatches(userId),
+        calendarVisibilityStore.getVisibilityMap(userId),
+      ]);
+      if (activeUserIdRef.current !== userId) return;
       setBatches(fetchedBatches);
       setVisibilityMap(fetchedVisibility);
       const user = userStore.getUserById(userId);
@@ -83,13 +89,7 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
   }, [userId]);
 
   const getViewRange = useCallback((): { start: Date; end: Date } => {
-    if (viewMode === 'day') {
-      const start = new Date(selectedDate);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(selectedDate);
-      end.setHours(23, 59, 59, 999);
-      return { start, end };
-    } else if (viewMode === 'week') {
+    if (viewMode === 'week') {
       const start = new Date(selectedDate);
       start.setDate(selectedDate.getDate() - 3);
       start.setHours(0, 0, 0, 0);
@@ -265,18 +265,23 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
   }, [userId, refreshTrigger, loadSettings]);
 
   useEffect(() => {
+    setBatches([]);
+    setVisibilityMap({ main: true });
+  }, [userId]);
+
+  useEffect(() => {
     loadImportsAndVisibility();
   }, [userId, refreshTrigger, loadImportsAndVisibility]);
 
   const handleToggleVisibility = useCallback(async (calendarId: string, isVisible: boolean) => {
     try {
-      await calendarVisibilityStore.setVisibility(calendarId, isVisible);
-      const updatedMap = await calendarVisibilityStore.getVisibilityMap();
-      setVisibilityMap(updatedMap);
+      await calendarVisibilityStore.setVisibility(userId, calendarId, isVisible);
+      const updatedMap = await calendarVisibilityStore.getVisibilityMap(userId);
+      if (activeUserIdRef.current === userId) setVisibilityMap(updatedMap);
     } catch (error) {
       console.error('Failed to toggle visibility:', error);
     }
-  }, []);
+  }, [userId]);
 
   const handleImportCalendar = useCallback(async () => {
     try {
@@ -307,82 +312,11 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
             text: 'Import',
             onPress: async () => {
               try {
-                const eventIds: string[] = [];
-                const blockIds: string[] = [];
-                const taskIds: string[] = [];
-
-                const now = new Date().toISOString();
-                await db.transaction(async (tx) => {
-                  parsedEvents.forEach((item) => {
-                    const id = generateId('event');
-                    tx.executeSync(
-                      `INSERT INTO events (id, user_id, title, date, start_time, end_time, location, linked_calendar_block, recurrence_rule, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        id,
-                        userId,
-                        item.title,
-                        item.date,
-                        item.startTime,
-                        item.endTime,
-                        item.location || null,
-                        null,
-                        item.recurrenceRule || null,
-                        now,
-                        now,
-                      ]
-                    );
-                    eventIds.push(id);
-                  });
-
-                  parsedBlocks.forEach((item) => {
-                    const id = generateId('block');
-                    tx.executeSync(
-                      `INSERT INTO time_blocks (id, user_id, title, date, start_time, end_time, color, category, notes, recurrence_rule, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        id,
-                        userId,
-                        item.title,
-                        item.date,
-                        item.startTime,
-                        item.endTime,
-                        item.color || Colors.blue,
-                        item.category || 'Imported',
-                        item.notes || null,
-                        item.recurrenceRule || null,
-                        now,
-                        now,
-                      ]
-                    );
-                    blockIds.push(id);
-                  });
-
-                  parsedTasks.forEach((item) => {
-                    const id = generateId('task');
-                    tx.executeSync(
-                      `INSERT INTO tasks (id, user_id, title, due_date, due_time, is_completed, priority, category, notes, recurrence_rule, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        id,
-                        userId,
-                        item.title,
-                        item.dueDate || null,
-                        item.dueTime || null,
-                        0,
-                        item.priority || 'Medium',
-                        item.category || 'Imported',
-                        item.notes || null,
-                        item.recurrenceRule || null,
-                        now,
-                        now,
-                      ]
-                    );
-                    taskIds.push(id);
-                  });
+                await persistImportedCalendarBatch(userId, fileName, {
+                  events: parsedEvents,
+                  blocks: parsedBlocks,
+                  tasks: parsedTasks,
                 });
-
-                await importedBatchesStore.saveImportedBatch(fileName, eventIds, blockIds, taskIds);
 
                 Alert.alert('Success', `Successfully imported ${totalCount} items.`);
                 loadImportsAndVisibility();
@@ -446,33 +380,7 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
           style: 'destructive',
           onPress: async () => {
             try {
-              await db.transaction(async (tx) => {
-                batch.events.forEach((id: string) => {
-                  try {
-                    tasksStore.deleteEvent(id, tx);
-                  } catch (e) {
-                    console.warn(`Failed to delete event ${id}:`, e);
-                  }
-                });
-
-                batch.blocks.forEach((id: string) => {
-                  try {
-                    timeBlocksStore.delete(id, tx);
-                  } catch (e) {
-                    console.warn(`Failed to delete block ${id}:`, e);
-                  }
-                });
-
-                batch.tasks.forEach((id: string) => {
-                  try {
-                    tasksStore.deleteTask(id, tx);
-                  } catch (e) {
-                    console.warn(`Failed to delete task ${id}:`, e);
-                  }
-                });
-              });
-
-              await importedBatchesStore.deleteImportedBatch(batch.id);
+              await removeImportedCalendarBatch(userId, batch);
 
               loadImportsAndVisibility();
               onRefresh();
@@ -485,11 +393,11 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
         },
       ]
     );
-  }, [loadImportsAndVisibility, onRefresh]);
+  }, [userId, loadImportsAndVisibility, onRefresh]);
 
   const startRemoveFlow = useCallback(async () => {
     try {
-      const fetchedBatches = await importedBatchesStore.getImportedBatches();
+      const fetchedBatches = await importedBatchesStore.getImportedBatches(userId);
       if (fetchedBatches.length === 0) {
         Alert.alert('Remove Imported Calendar', 'No previously imported calendars were found.');
         return;
@@ -523,18 +431,7 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
       console.error('Failed to load import batches:', err);
       Alert.alert('Error', 'Failed to load import history.');
     }
-  }, [confirmBatchRemoval]);
-
-  const navigateDay = useCallback((direction: 'prev' | 'next') => {
-    const newDate = new Date(selectedDate);
-    if (direction === 'prev') {
-      newDate.setDate(newDate.getDate() - 1);
-    } else {
-      newDate.setDate(newDate.getDate() + 1);
-    }
-    setSelectedDate(newDate);
-    setCurrentDate(newDate);
-  }, [selectedDate]);
+  }, [userId, confirmBatchRemoval]);
 
   const navigateWeek = useCallback((direction: 'prev' | 'next') => {
     const newDate = new Date(selectedDate);
@@ -558,16 +455,14 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
   }, [currentDate]);
 
   const handlePrevPress = useCallback(() => {
-    if (viewMode === 'day') navigateDay('prev');
-    else if (viewMode === 'week') navigateWeek('prev');
+    if (viewMode === 'week') navigateWeek('prev');
     else navigateMonth('prev');
-  }, [viewMode, navigateDay, navigateWeek, navigateMonth]);
+  }, [viewMode, navigateWeek, navigateMonth]);
 
   const handleNextPress = useCallback(() => {
-    if (viewMode === 'day') navigateDay('next');
-    else if (viewMode === 'week') navigateWeek('next');
+    if (viewMode === 'week') navigateWeek('next');
     else navigateMonth('next');
-  }, [viewMode, navigateDay, navigateWeek, navigateMonth]);
+  }, [viewMode, navigateWeek, navigateMonth]);
 
   const handleGoToToday = useCallback(() => {
     const today = new Date();
@@ -578,7 +473,8 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
   const handleDayTap = useCallback((dayNum: number) => {
     const targetDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), dayNum);
     setSelectedDate(targetDate);
-    setViewMode('day');
+    // The week view shows the tapped day's timeline under its strip.
+    setViewMode('week');
   }, [currentDate, setViewMode]);
 
   const formatLocalDate = (d: Date): string => {
@@ -593,33 +489,6 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
     const todayStr = formatLocalDate(new Date());
     return tasksData.filter((t) => t.dueDate && t.dueDate < todayStr && !t.isCompleted);
   }, [userId]);
-
-  const getChronologicalFeed = useCallback((): FeedItem[] => {
-    const feed: FeedItem[] = [];
-    const dateStr = formatLocalDate(selectedDate);
-    const dayBlocks = blocks.filter((b) => b.date === dateStr);
-
-    tasks.forEach((t) => {
-      feed.push({
-        type: 'task', id: t.id, title: t.title,
-        time: t.dueTime || 'All Day', item: t,
-      });
-    });
-    events.forEach((e) => {
-      feed.push({
-        type: 'event', id: e.id, title: e.title,
-        time: e.startTime, endTime: e.endTime, item: e,
-      });
-    });
-    dayBlocks.forEach((b) => {
-      feed.push({
-        type: 'block', id: b.id, title: b.title,
-        time: b.startTime, endTime: b.endTime, item: b,
-      });
-    });
-
-    return feed.sort((a, b) => a.time.localeCompare(b.time));
-  }, [selectedDate, blocks, tasks, events]);
 
   return {
     currentDate,
@@ -645,7 +514,6 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
     loadBlocks,
     loadScheduleData,
     getOverdueTasks,
-    getChronologicalFeed,
 
     // Visibility and Import/Export
     batches,

@@ -1,4 +1,5 @@
 import { db, DatabaseTransaction } from './database';
+import { syncOutboxStore } from './syncOutboxStore';
 
 export interface TimeBlock {
   id: string;
@@ -32,6 +33,53 @@ const mapRowToBlock = (row: any): TimeBlock => ({
   deletedAt: row.deleted_at,
 });
 
+type StoredSyncRow = Record<string, unknown>;
+
+interface ReminderCleanupRow {
+  id: string;
+  preCastAudioPath: string | null;
+}
+
+const scheduleReminderCleanup = (
+  executor: DatabaseTransaction,
+  reminders: ReminderCleanupRow[],
+): void => {
+  if (reminders.length === 0) return;
+  const cleanupRows = [...reminders];
+  const cleanup = (): void => {
+    for (const reminder of cleanupRows) {
+      try {
+        const { cancelReminderAlarm } = require('../scheduler/reminderAlarm');
+        const { deletePreCachedReminderAudio } = require('../ai/tts/ttsService');
+        cancelReminderAlarm(reminder.id).catch((error: unknown) =>
+          console.error(`[deleteTimeBlock] Failed to cancel alarm for reminder ${reminder.id}:`, error)
+        );
+        if (reminder.preCastAudioPath) {
+          deletePreCachedReminderAudio(reminder.preCastAudioPath).catch((error: unknown) =>
+            console.error(`[deleteTimeBlock] Failed to delete audio for reminder ${reminder.id}:`, error)
+          );
+        }
+      } catch (error) {
+        console.error('[deleteTimeBlock] Failed to import modules for reminder cleanup:', error);
+      }
+    }
+  };
+
+  if (executor.afterCommit) executor.afterCommit(cleanup);
+  else cleanup();
+};
+
+const timeBlockPayload = (row: StoredSyncRow): Record<string, unknown> => ({
+  title: row.title,
+  date: row.date,
+  start_time: row.start_time,
+  end_time: row.end_time,
+  color: row.color,
+  category: row.category,
+  notes: row.notes,
+  recurrence_rule: row.recurrence_rule,
+});
+
 export const timeBlocksStore = {
   /**
    * Retrieves all non-deleted time blocks for a user.
@@ -52,10 +100,13 @@ export const timeBlocksStore = {
   /**
    * Inserts a new time block.
    */
-  insert: (block: Omit<TimeBlock, 'createdAt' | 'updatedAt' | 'deletedAt'>): void => {
+  insert: (
+    block: Omit<TimeBlock, 'createdAt' | 'updatedAt' | 'deletedAt'>,
+    executor?: DatabaseTransaction,
+  ): void => {
     const now = new Date().toISOString();
-    try {
-      db.executeSync(
+    const applyInsert = (tx: DatabaseTransaction): void => {
+      tx.executeSync(
         `INSERT INTO time_blocks (id, user_id, title, date, start_time, end_time, color, category, notes, recurrence_rule, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -71,8 +122,22 @@ export const timeBlocksStore = {
           block.recurrenceRule || null,
           now,
           now,
-        ]
+        ],
       );
+      syncOutboxStore.enqueueMutation(block.userId, 'time_block', block.id, 'create', {
+        title: block.title,
+        date: block.date,
+        start_time: block.startTime,
+        end_time: block.endTime,
+        color: block.color,
+        category: block.category,
+        notes: block.notes || null,
+        recurrence_rule: block.recurrenceRule || null,
+      }, 'account', block.userId, tx);
+    };
+    try {
+      if (executor) applyInsert(executor);
+      else db.transactionSync(applyInsert);
     } catch (error) {
       console.error('Error inserting time block:', error);
       throw error;
@@ -113,10 +178,17 @@ export const timeBlocksStore = {
     params.push(block.id);
 
     try {
-      db.executeSync(
-        `UPDATE time_blocks SET ${sets.join(', ')} WHERE id = ?`,
-        params
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(`UPDATE time_blocks SET ${sets.join(', ')} WHERE id = ?`, params);
+        const row = tx.executeSync('SELECT * FROM time_blocks WHERE id = ?', [block.id]).rows?.[0] as StoredSyncRow | undefined;
+        if (row) {
+          const userId = String(row.user_id);
+          syncOutboxStore.enqueueMutation(
+            userId, 'time_block', block.id, 'update', timeBlockPayload(row),
+            'account', userId, tx,
+          );
+        }
+      });
     } catch (error) {
       console.error('Error updating time block:', error);
       throw error;
@@ -128,51 +200,47 @@ export const timeBlocksStore = {
    */
   delete: (id: string, tx?: DatabaseTransaction): void => {
     const now = new Date().toISOString();
-    const executor = tx || db;
-    try {
-      const blockRowResult = executor.executeSync(
+    const cleanupRows: ReminderCleanupRow[] = [];
+    const applyDelete = (executor: DatabaseTransaction): void => {
+      const blockRow = executor.executeSync(
         `SELECT user_id, title FROM time_blocks WHERE id = ?`,
         [id]
-      );
-      const blockRow = blockRowResult.rows?.[0];
+      ).rows?.[0];
+      if (!blockRow) return;
 
       executor.executeSync(
         `UPDATE time_blocks SET deleted_at = ?, updated_at = ? WHERE id = ?`,
         [now, now, id]
       );
+      const userId = String(blockRow.user_id);
+      syncOutboxStore.enqueueMutation(
+        userId, 'time_block', id, 'delete', {}, 'account', userId, executor,
+      );
 
-      if (blockRow) {
-        const userId = blockRow.user_id;
-        const title = blockRow.title;
-        const remindersResult = executor.executeSync(
-          `SELECT id, precast_audio_path FROM reminders WHERE user_id = ? AND task = ? AND deleted_at IS NULL AND status IN ('pending', 'snoozed')`,
-          [userId, title]
+      const reminders = executor.executeSync(
+        `SELECT id, precast_audio_path FROM reminders WHERE user_id = ? AND task = ? AND deleted_at IS NULL AND status IN ('pending', 'snoozed')`,
+        [userId, blockRow.title]
+      ).rows || [];
+      for (const reminder of reminders) {
+        executor.executeSync(
+          `UPDATE reminders SET deleted_at = ?, updated_at = ? WHERE id = ?`,
+          [now, now, reminder.id]
         );
-        const reminders = remindersResult.rows || [];
-
-        for (const r of reminders) {
-          executor.executeSync(
-            `UPDATE reminders SET deleted_at = ?, updated_at = ? WHERE id = ?`,
-            [now, now, r.id]
-          );
-
-          try {
-            const { cancelReminderAlarm } = require('../scheduler/reminderAlarm');
-            const { deletePreCachedReminderAudio } = require('../ai/tts/ttsService');
-            
-            cancelReminderAlarm(r.id).catch((err: any) =>
-              console.error(`[deleteTimeBlock] Failed to cancel alarm for reminder ${r.id}:`, err)
-            );
-            if (r.precast_audio_path) {
-              deletePreCachedReminderAudio(r.precast_audio_path).catch((err: any) =>
-                console.error(`[deleteTimeBlock] Failed to delete audio for reminder ${r.id}:`, err)
-              );
-            }
-          } catch (importErr) {
-            console.error('[deleteTimeBlock] Failed to import modules for reminder cleanup:', importErr);
-          }
-        }
+        syncOutboxStore.enqueueMutation(
+          userId, 'reminder', String(reminder.id), 'delete', {}, 'account', userId, executor,
+        );
+        cleanupRows.push({
+          id: String(reminder.id),
+          preCastAudioPath: typeof reminder.precast_audio_path === 'string'
+            ? reminder.precast_audio_path
+            : null,
+        });
       }
+      scheduleReminderCleanup(executor, cleanupRows);
+    };
+    try {
+      if (tx) applyDelete(tx);
+      else db.transactionSync(applyDelete);
     } catch (error) {
       console.error('Error deleting time block:', error);
       throw error;

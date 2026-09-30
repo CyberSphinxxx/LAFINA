@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Colors, Fonts, Layout } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Colors, Fonts, Layout, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 
 interface OnboardingNavigationProps {
   step: number;
@@ -16,7 +16,7 @@ export const OnboardingNavigation: React.FC<OnboardingNavigationProps> = ({
   onBack,
   onNext,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   return (
     <View style={[styles.navigation, themed.navigation]}>
@@ -74,14 +74,11 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors } = useTheme();
-  return {
-    navigation: {
-      borderTopColor: colors.border,
-    },
-    backButtonText: {
-      color: colors.textSecondary,
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors) => ({
+  navigation: {
+    borderTopColor: colors.border,
+  },
+  backButtonText: {
+    color: colors.textSecondary,
+  },
+});

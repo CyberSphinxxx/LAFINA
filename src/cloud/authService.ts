@@ -1,6 +1,12 @@
 import { cloudClient, CloudResult } from './cloudClient';
 import { normalizeEmail, validatePassword } from '../storage/authUtils';
 import { userStore } from '../storage/userStore';
+import { businessStore } from '../storage/businessStore';
+import type {
+  BusinessSession,
+  SubscriptionPlan,
+  SystemRole,
+} from '../storage/syncTypes';
 
 export interface AuthResponseData {
   access_token: string;
@@ -10,6 +16,8 @@ export interface AuthResponseData {
   user_id: string;
   email: string;
   role: string;
+  system_role?: SystemRole;
+  subscription_plan?: SubscriptionPlan;
   recovery_codes?: string[];
 }
 
@@ -17,6 +25,10 @@ export interface UserProfileData {
   id: string;
   email: string;
   role: string;
+  system_role?: SystemRole;
+  subscription_plan?: SubscriptionPlan;
+  effective_subscription_plan?: SubscriptionPlan;
+  business_session?: BusinessSession | null;
   is_active: boolean;
   created_at: string;
 }
@@ -98,9 +110,37 @@ export const authService = {
     const requestProfile = (): Promise<CloudResult<UserProfileData>> =>
       cloudClient.request<UserProfileData>('/v1/auth/me', { method: 'GET' }, true);
 
+    const handleProfileSuccess = (result: CloudResult<UserProfileData>): CloudResult<UserProfileData> => {
+      if (result.status === 'success' && result.data) {
+        const activeSession = userStore.getActiveSessionToken();
+        if (activeSession.userId) {
+          businessStore.saveCachedCapabilities(
+            activeSession.userId,
+            result.data.subscription_plan || 'student',
+            result.data.effective_subscription_plan || 'student',
+            result.data.business_session || null
+          );
+          if (result.data.business_session) {
+            businessStore.saveBusiness({
+              id: result.data.business_session.business_id,
+              name: result.data.business_session.business_name,
+              ownerId: result.data.id,
+            });
+            businessStore.saveMembership({
+              businessId: result.data.business_session.business_id,
+              userId: activeSession.userId,
+              memberRole: result.data.business_session.member_role,
+              membershipStatus: result.data.business_session.membership_status,
+            });
+          }
+        }
+      }
+      return result;
+    };
+
     const initialResult = await requestProfile();
     if (initialResult.status !== 'auth_required') {
-      return initialResult;
+      return handleProfileSuccess(initialResult);
     }
 
     let refreshToken: string | null = null;
@@ -110,7 +150,7 @@ export const authService = {
       cloudClient.clearActiveSession();
       return {
         status: 'auth_required',
-        error: 'Refresh-token renewal failed. Sign in or link the cloud account again.',
+        error: 'Refresh-token renewal failed. Sign in again while online.',
       };
     }
     if (!refreshToken) {
@@ -125,14 +165,14 @@ export const authService = {
       cloudClient.clearActiveSession();
       return {
         status: 'auth_required',
-        error: 'Refresh-token renewal failed. Sign in or link the cloud account again.',
+        error: 'Refresh-token renewal failed. Sign in again while online.',
       };
     }
     if (refreshResult.status !== 'success') {
       cloudClient.clearActiveSession();
       return {
         status: 'auth_required',
-        error: 'Refresh-token renewal failed. Sign in or link the cloud account again.',
+        error: 'Refresh-token renewal failed. Sign in again while online.',
       };
     }
 
@@ -141,9 +181,9 @@ export const authService = {
       cloudClient.clearActiveSession();
       return {
         status: 'auth_required',
-        error: 'Cloud authentication expired. Sign in or link the cloud account again.',
+        error: 'Cloud authentication expired. Sign in again while online.',
       };
     }
-    return renewedProfile;
+    return handleProfileSuccess(renewedProfile);
   },
 };

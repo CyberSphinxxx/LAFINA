@@ -10,6 +10,8 @@ import {
 } from '../constants';
 import { generateId } from '../utils';
 import { db } from './database';
+import { buildProfileSyncPayload } from './profileSyncPayload';
+import { syncOutboxStore } from './syncOutboxStore';
 
 export type StudyPeakHour =
   | 'morning'
@@ -206,12 +208,18 @@ export const preferencesStore = {
    */
   save: (userId: string, preferences: UserPreferences): StoredUserPreferences => {
     const normalized = normalizePreferences(preferences);
-    const existing = preferencesStore.getStored(userId);
     const now = new Date().toISOString();
 
     try {
-      if (existing) {
-        db.executeSync(
+      db.transactionSync((tx) => {
+        const existingResult = tx.executeSync(
+          'SELECT id FROM user_preferences WHERE user_id = ?',
+          [userId],
+        );
+        const existingId = existingResult.rows?.[0]?.id;
+
+        if (typeof existingId === 'string') {
+          tx.executeSync(
           `UPDATE user_preferences
            SET wake_time = ?, sleep_time = ?, study_peak_hours = ?, busiest_day = ?,
                reminder_lead_minutes = ?, snooze_tendency = ?, weekly_class_count = ?,
@@ -227,11 +235,11 @@ export const preferencesStore = {
             normalized.weeklyClassCount,
             normalized.longestClassGap,
             now,
-            existing.id,
-          ]
-        );
-      } else {
-        db.executeSync(
+            existingId,
+          ],
+          );
+        } else {
+          tx.executeSync(
           `INSERT INTO user_preferences (
              id, user_id, wake_time, sleep_time, study_peak_hours, busiest_day,
              reminder_lead_minutes, snooze_tendency, weekly_class_count,
@@ -250,9 +258,21 @@ export const preferencesStore = {
             normalized.longestClassGap,
             now,
             now,
-          ]
+          ],
+          );
+        }
+
+        syncOutboxStore.enqueueMutation(
+          userId,
+          'profile',
+          'profile',
+          'update',
+          buildProfileSyncPayload(userId, tx),
+          'account',
+          userId,
+          tx,
         );
-      }
+      });
     } catch (error) {
       console.error('Error saving user preferences:', error);
       throw error;

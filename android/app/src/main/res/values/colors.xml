@@ -1,0 +1,5 @@
+<resources>
+    <!-- Behind the adaptive launcher icon. The mark is drawn for a light
+         field, as it is in the desktop app's icon. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

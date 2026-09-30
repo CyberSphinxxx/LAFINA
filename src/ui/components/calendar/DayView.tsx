@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { Colors, Fonts, Shadows } from '../../theme';
-import { useTheme } from '../../contexts/ThemeContext';
+import { Colors, Fonts, Shadows, useThemedStyles } from '../../theme';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 import { Task, Event } from '../../../storage/tasksStore';
 import { TimeBlock } from '../../../storage/timeBlocksStore';
 import { Check, Users } from 'lucide-react-native';
@@ -56,7 +56,7 @@ export const DayView: React.FC<DayViewProps> = ({
   onEditBlock,
   onAddBlock,
 }) => {
-  const themed = useThemedStyles();
+  const themed = useThemedStyles(getThemedStyles);
 
   const dateStr = targetDate.toISOString().split('T')[0];
   const dayBlocks = blocks.filter((b) => b.date === dateStr);
@@ -320,57 +320,54 @@ const styles = StyleSheet.create({
   },
 });
 
-function useThemedStyles() {
-  const { colors, isDarkMode } = useTheme();
-  return {
-    hourlyContainer: {
-      backgroundColor: colors.background,
-    },
-    allDayContainer: {
-      backgroundColor: colors.cardBg,
-    },
-    allDayTitle: {
-      color: colors.textPrimary,
-    },
-    card: {
-      backgroundColor: colors.cardBg,
-    },
-    checkbox: {
-      borderColor: colors.border,
-    },
-    checkboxChecked: {
-      backgroundColor: Colors.success,
-      borderColor: Colors.success,
-    },
-    cardTitle: {
-      color: colors.textPrimary,
-    },
-    cardTime: {
-      color: colors.textSecondary,
-    },
-    hourRow: {
-      borderBottomColor: 'transparent',
-    },
-    hourLabel: {
-      color: colors.textSecondary,
-    },
-    hourTimelineCell: {
-      borderTopColor: colors.border,
-    },
-    hourlyBlockCard: {
-      backgroundColor: colors.cardBg,
-    },
-    hourlyBlockTitle: {
-      color: colors.textPrimary,
-    },
-    hourlyBlockTime: {
-      color: colors.textSecondary,
-    },
-    eventIconContainer: {
-      backgroundColor: isDarkMode ? 'rgba(52, 152, 219, 0.15)' : '#EBF5FB',
-    },
-    emptyHourSlot: {
-      backgroundColor: 'transparent',
-    },
-  };
-}
+const getThemedStyles = (colors: ThemeColors, isDarkMode: boolean) => ({
+  hourlyContainer: {
+    backgroundColor: colors.background,
+  },
+  allDayContainer: {
+    backgroundColor: colors.cardBg,
+  },
+  allDayTitle: {
+    color: colors.textPrimary,
+  },
+  card: {
+    backgroundColor: colors.cardBg,
+  },
+  checkbox: {
+    borderColor: colors.border,
+  },
+  checkboxChecked: {
+    backgroundColor: Colors.success,
+    borderColor: Colors.success,
+  },
+  cardTitle: {
+    color: colors.textPrimary,
+  },
+  cardTime: {
+    color: colors.textSecondary,
+  },
+  hourRow: {
+    borderBottomColor: 'transparent',
+  },
+  hourLabel: {
+    color: colors.textSecondary,
+  },
+  hourTimelineCell: {
+    borderTopColor: colors.border,
+  },
+  hourlyBlockCard: {
+    backgroundColor: colors.cardBg,
+  },
+  hourlyBlockTitle: {
+    color: colors.textPrimary,
+  },
+  hourlyBlockTime: {
+    color: colors.textSecondary,
+  },
+  eventIconContainer: {
+    backgroundColor: isDarkMode ? 'rgba(52, 152, 219, 0.15)' : '#EBF5FB',
+  },
+  emptyHourSlot: {
+    backgroundColor: 'transparent',
+  },
+});

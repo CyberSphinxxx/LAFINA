@@ -1,6 +1,6 @@
 {
   "name": "lafina",
-  "version": "0.0.1",
+  "version": "1.3.4",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -8,6 +8,8 @@
     "lint": "eslint .",
     "preflight": "npm run typecheck && npm test && npm run lint",
     "profile:call": "powershell -ExecutionPolicy Bypass -File scripts/profile-call.ps1",
+    "release:keygen": "node scripts/release-keygen.mjs",
+    "release:ota": "node scripts/release-ota.mjs",
     "start": "react-native start",
     "test": "jest",
     "test:coverage": "jest --coverage",

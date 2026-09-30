@@ -1,10 +1,18 @@
 import { db, DatabaseTransaction } from './database';
 import { GUEST_USER_ID } from '../constants';
 import { syncOutboxStore } from './syncOutboxStore';
+import { buildProfileSyncPayload } from './profileSyncPayload';
+import {
+  pomodoroSessionPayload,
+  pomodoroSettingsFromRow,
+  pomodoroSettingsPayload,
+} from './pomodoroStore';
+import { POMODORO_SETTINGS_ENTITY_ID } from './syncTypes';
 
 export interface GuestDataSummary {
   taskCount: number;
   eventCount: number;
+  timeBlockCount: number;
   reminderCount: number;
   noteCount: number;
   categoryCount: number;
@@ -17,6 +25,7 @@ export const guestMigration = {
   getGuestDataSummary: (): GuestDataSummary => {
     const taskRes = db.executeSync('SELECT COUNT(*) as count FROM tasks WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
     const eventRes = db.executeSync('SELECT COUNT(*) as count FROM events WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
+    const timeBlockRes = db.executeSync('SELECT COUNT(*) as count FROM time_blocks WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
     const reminderRes = db.executeSync('SELECT COUNT(*) as count FROM reminders WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
     const noteRes = db.executeSync('SELECT COUNT(*) as count FROM notes WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
     const catRes = db.executeSync('SELECT COUNT(*) as count FROM custom_categories WHERE user_id = ? AND deleted_at IS NULL', [GUEST_USER_ID]);
@@ -24,6 +33,7 @@ export const guestMigration = {
     return {
       taskCount: taskRes.rows?.[0]?.count ?? 0,
       eventCount: eventRes.rows?.[0]?.count ?? 0,
+      timeBlockCount: timeBlockRes.rows?.[0]?.count ?? 0,
       reminderCount: reminderRes.rows?.[0]?.count ?? 0,
       noteCount: noteRes.rows?.[0]?.count ?? 0,
       categoryCount: catRes.rows?.[0]?.count ?? 0,
@@ -35,7 +45,7 @@ export const guestMigration = {
    * and clears local password hash upon cloud authentication confirmation.
    */
   linkGuestToCloudAccount: async (cloudUserId: string, cloudEmail: string): Promise<void> => {
-    await db.transaction(async (tx: DatabaseTransaction) => {
+    db.transactionSync((tx: DatabaseTransaction) => {
       const now = new Date().toISOString();
 
       // 1. Insert or ignore new user entry for cloudUserId
@@ -58,19 +68,39 @@ export const guestMigration = {
       tx.executeSync(`UPDATE user_behavior_logs SET user_id = ? WHERE user_id = ?`, [cloudUserId, GUEST_USER_ID]);
       tx.executeSync(`UPDATE ml_feature_snapshots SET user_id = ? WHERE user_id = ?`, [cloudUserId, GUEST_USER_ID]);
 
+      // 2b. Study tools. The Pomodoro log moves with the guest; one-row-per-user
+      // tables keep the account's own row when it already has one here.
+      if (cloudUserId !== GUEST_USER_ID) {
+        tx.executeSync(`UPDATE pomodoro_sessions SET user_id = ? WHERE user_id = ?`, [cloudUserId, GUEST_USER_ID]);
+        ['pomodoro_settings', 'pomodoro_state'].forEach((table) => {
+          tx.executeSync(`UPDATE OR IGNORE ${table} SET user_id = ? WHERE user_id = ?`, [cloudUserId, GUEST_USER_ID]);
+          tx.executeSync(`DELETE FROM ${table} WHERE user_id = ?`, [GUEST_USER_ID]);
+        });
+      }
+
       // 3. Remove old guest record if different
       if (cloudUserId !== GUEST_USER_ID) {
         tx.executeSync(`DELETE FROM users WHERE id = ?`, [GUEST_USER_ID]);
       }
 
-      tx.executeSync(`DELETE FROM active_session`);
-      tx.executeSync(`INSERT INTO active_session (user_id) VALUES (?)`, [cloudUserId]);
-    });
+      tx.executeSync('DELETE FROM active_session');
+      tx.executeSync(
+        `INSERT INTO active_session (user_id, created_at, updated_at) VALUES (?, ?, ?)`,
+        [cloudUserId, now, now],
+      );
 
-    // 3. Enqueue all active tasks, events, reminders, notes, categories into sync_outbox
-    const tasks = db.executeSync('SELECT * FROM tasks WHERE user_id = ? AND deleted_at IS NULL', [cloudUserId]);
-    tasks.rows?.forEach((row: any) => {
-      syncOutboxStore.enqueueMutation('task', row.id, 'create', {
+      // Guest-scoped mutations cannot be sent under the new account token. Rebuild them below.
+      tx.executeSync(`DELETE FROM sync_outbox WHERE user_id = ?`, [GUEST_USER_ID]);
+      tx.executeSync(`DELETE FROM sync_metadata WHERE user_id = ?`, [GUEST_USER_ID]);
+      tx.executeSync(`DELETE FROM sync_state WHERE user_id = ?`, [GUEST_USER_ID]);
+      tx.executeSync(`DELETE FROM sync_control WHERE user_id = ?`, [GUEST_USER_ID]);
+
+      // 4. Enqueue a complete snapshot atomically with the ownership migration.
+      const tasks = tx.executeSync(
+        'SELECT * FROM tasks WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      tasks.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'task', String(row.id), 'create', {
         title: row.title,
         due_date: row.due_date,
         due_time: row.due_time,
@@ -79,12 +109,13 @@ export const guestMigration = {
         category: row.category,
         notes: row.notes,
         recurrence_rule: row.recurrence_rule,
-      });
-    });
+      }, 'account', cloudUserId, tx));
 
-    const events = db.executeSync('SELECT * FROM events WHERE user_id = ? AND deleted_at IS NULL', [cloudUserId]);
-    events.rows?.forEach((row: any) => {
-      syncOutboxStore.enqueueMutation('event', row.id, 'create', {
+      const events = tx.executeSync(
+        'SELECT * FROM events WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      events.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'event', String(row.id), 'create', {
         title: row.title,
         date: row.date,
         start_time: row.start_time,
@@ -92,24 +123,41 @@ export const guestMigration = {
         location: row.location,
         linked_calendar_block: row.linked_calendar_block,
         recurrence_rule: row.recurrence_rule,
-      });
-    });
+      }, 'account', cloudUserId, tx));
 
-    const reminders = db.executeSync('SELECT * FROM reminders WHERE user_id = ? AND deleted_at IS NULL', [cloudUserId]);
-    reminders.rows?.forEach((row: any) => {
-      syncOutboxStore.enqueueMutation('reminder', row.id, 'create', {
+      const timeBlocks = tx.executeSync(
+        'SELECT * FROM time_blocks WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      timeBlocks.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'time_block', String(row.id), 'create', {
+        title: row.title,
+        date: row.date,
+        start_time: row.start_time,
+        end_time: row.end_time,
+        color: row.color,
+        category: row.category,
+        notes: row.notes,
+        recurrence_rule: row.recurrence_rule,
+      }, 'account', cloudUserId, tx));
+
+      const reminders = tx.executeSync(
+        'SELECT * FROM reminders WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      reminders.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'reminder', String(row.id), 'create', {
         task: row.task,
         description: row.description,
         scheduled_at: row.scheduled_at,
         trigger_at: row.trigger_at,
         status: row.status,
         snooze_count: row.snooze_count,
-      });
-    });
+      }, 'account', cloudUserId, tx));
 
-    const notes = db.executeSync('SELECT * FROM notes WHERE user_id = ? AND deleted_at IS NULL', [cloudUserId]);
-    notes.rows?.forEach((row: any) => {
-      syncOutboxStore.enqueueMutation('note', row.id, 'create', {
+      const notes = tx.executeSync(
+        'SELECT * FROM notes WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      notes.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'note', String(row.id), 'create', {
         title: row.title,
         body: row.body,
         is_pinned: row.is_pinned === 1,
@@ -117,15 +165,48 @@ export const guestMigration = {
         category: row.category,
         is_voice_transcribed: row.is_voice_transcribed === 1,
         sort_order: row.sort_order,
-      });
-    });
+      }, 'account', cloudUserId, tx));
 
-    const cats = db.executeSync('SELECT * FROM custom_categories WHERE user_id = ? AND deleted_at IS NULL', [cloudUserId]);
-    cats.rows?.forEach((row: any) => {
-      syncOutboxStore.enqueueMutation('custom_category', row.id, 'create', {
+      const categories = tx.executeSync(
+        'SELECT * FROM custom_categories WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      categories.rows?.forEach((row) => syncOutboxStore.enqueueMutation(cloudUserId, 'custom_category', String(row.id), 'create', {
         name: row.name,
         color: row.color,
-      });
+      }, 'account', cloudUserId, tx));
+
+      // Study tools: the Pomodoro log and settings. Decks, study notes and
+      // meetings need Student Pro, which a guest never has.
+      const pomodoroSessions = tx.executeSync(
+        'SELECT * FROM pomodoro_sessions WHERE user_id = ? AND deleted_at IS NULL',
+        [cloudUserId],
+      );
+      pomodoroSessions.rows?.forEach((row) => syncOutboxStore.enqueueMutation(
+        cloudUserId, 'pomodoro_session', String(row.id), 'create', pomodoroSessionPayload(row),
+        'account', cloudUserId, tx,
+      ));
+      const pomodoroSettings = tx.executeSync(
+        'SELECT * FROM pomodoro_settings WHERE user_id = ?',
+        [cloudUserId],
+      ).rows?.[0];
+      if (pomodoroSettings) {
+        syncOutboxStore.enqueueMutation(
+          cloudUserId, 'pomodoro_settings', POMODORO_SETTINGS_ENTITY_ID, 'update',
+          pomodoroSettingsPayload(pomodoroSettingsFromRow(pomodoroSettings)), 'account', cloudUserId, tx,
+        );
+      }
+
+      syncOutboxStore.enqueueMutation(
+        cloudUserId,
+        'profile',
+        'profile',
+        'create',
+        buildProfileSyncPayload(cloudUserId, tx),
+        'account',
+        cloudUserId,
+        tx,
+      );
     });
   }
 };

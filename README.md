@@ -66,7 +66,7 @@ This is one way to run your app — you can also build it directly from Android 
 
 Now that you have successfully run the app, let's make changes!
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
 
 When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
 
@@ -95,6 +95,61 @@ To learn more about React Native, take a look at the following resources:
 - [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
 - [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
 - [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+
+---
+
+# Demo Accounts for UI Testing & Collaboration
+
+For rapid UI testing across both the mobile application (offline SQLite) and the FastAPI backend (PostgreSQL), pre-configured demo accounts are provided for the **USTP Innovators Lab** organization.
+
+### 🏢 Workspace Details
+- **Organization Name**: `USTP Innovators Lab`
+- **Subscription Plan**: `business` (Active, 5-seat capacity)
+- **Timezone**: `Asia/Manila`
+- **Shared Password (All Demo Accounts)**: `Password123!`
+
+---
+
+### 👥 Demo Account Credentials
+
+| Account Role | Email Address | Password | Display Name | Permissions & UI Shell |
+|---|---|---|---|---|
+| **Employer / Manager** | `manager@lafina.ph` | `Password123!` | Dr. Eleanor Vance | **Manager Shell** (`Overview`, `Work`, `Chat`, `Inbox`): Create & assign multi-member tasks, schedule shifts/work blocks with conflict warnings, review & approve/reopen employee submissions with feedback, manage team seats & invites. |
+| **Employee 1** | `alice@lafina.ph` | `Password123!` | Alice Guo | **Employee Shell** (`Today`, `Work`, `Chat`, `Inbox`): Active shift ("Morning Research Shift"), assigned tasks ("Deploy Edge Server Firewall", "Calibrate Oscilloscopes"), status progression (`in_progress` $\rightarrow$ `pending_review`), offline reminder calls. |
+| **Employee 2** | `bob@lafina.ph` | `Password123!` | Bob Santos | **Employee Shell** (`Today`, `Work`, `Chat`, `Inbox`): Active shift ("Lab Hardware Maintenance"), assigned tasks ("Submit Q3 Hardware Inventory", "Deploy Edge Server Firewall"), interactive Notes to-dos. |
+
+---
+
+### 🔄 Database Synchronization (Local SQLite & FastAPI PostgreSQL)
+
+The demo accounts, workspace memberships, and sample collaborative tasks are fully synchronized across both databases:
+
+1. **Local SQLite (On-Device / Offline)**:
+   - Automatically seeded on app initialization via `initDatabase()`.
+   - Allows instant offline login with full business capabilities cache even without network connectivity.
+
+2. **FastAPI & PostgreSQL (Cloud Backend)**:
+   - To re-seed or ensure your cloud database is up to date, execute:
+     ```sh
+     python backend/scripts/seed_demo_accounts.py
+     ```
+
+---
+
+### 🧪 Suggested Testing Workflows
+
+1. **Test Manager Overview & Task Creation**:
+   - Log into the app with `manager@lafina.ph` / `Password123!`.
+   - View seat allocation (3/5 seats occupied) on the `Overview` tab.
+   - Navigate to `Work` tab $\rightarrow$ Tap `+ Assign Task` $\rightarrow$ Select assignees (Alice, Bob) $\rightarrow$ Submit task.
+2. **Test Shift Scheduling & Conflict Detection**:
+   - In Manager shell, open `Work` tab $\rightarrow$ `Calendar` subtab $\rightarrow$ Tap `+ Shift`.
+   - Try scheduling a block overlapping `09:00 - 13:00` for Alice to see the real-time collision warning banner.
+3. **Test Employee Execution & Review Flow**:
+   - Log out from `Profile` $\rightarrow$ Log in as `alice@lafina.ph` / `Password123!`.
+   - On `Today` screen, view assigned shifts and tasks.
+   - Update task status to `Submit for Review`.
+   - Switch back to `manager@lafina.ph` $\rightarrow$ Open `Work` tab $\rightarrow$ Filter by `Pending Review` $\rightarrow$ Review submission with approval or reopen with feedback.
 
 ---
 
@@ -135,6 +190,25 @@ DEEPSEEK_API_KEY=sk-your-deepseek-api-key
    - Revoke the previous key on the DeepSeek Platform.
 
 
+### Flashcards: PDF Reading (Render)
+Flashcard generation reads the uploaded PDF on the server, so `pdfplumber` must
+be installed there. It is listed in `backend/requirements.txt`, so a Render
+deploy that runs `pip install -r backend/requirements.txt` picks it up; if
+`/v1/ai/flashcards` answers *"PDF reading is not installed on the server"*, the
+service is running a build from before that line was added and needs a redeploy.
+
+Scanned PDFs additionally need text recognition, which is **optional**:
+
+```sh
+pip install pytesseract pillow      # the Python wrapper
+```
+
+The wrapper drives the Tesseract program, which is a system package rather than
+a Python one. Render's native Python runtime cannot install it, so OCR needs a
+Docker deploy whose image runs `apt-get install -y tesseract-ocr`. Without it
+everything else still works: pages with selectable text are read normally, and a
+scanned PDF is refused with an explanation instead of producing an empty deck.
+
 ## 3. Creating Admin Accounts (No Hardcoded Credentials)
 To create an admin account or promote an existing account without hardcoding passwords:
 
@@ -174,4 +248,3 @@ Run Ruff linter check:
 ```sh
 python -m ruff check backend
 ```
-

@@ -681,6 +681,7 @@ export const autoSnoozeCall = async (): Promise<void> => {
 export const declineCall = async (
   reminderId: string,
   userId: string,
+  speechProvider: CallSpeechProvider = defaultCallSpeechProvider,
 ): Promise<void> => {
   const reminder = remindersStore.getReminderById(reminderId);
   if (!reminder || reminder.userId !== userId) {
@@ -696,7 +697,7 @@ export const declineCall = async (
     state: 'ringing',
     retryCount: 0,
     voiceEnabled: false,
-    speechProvider: defaultCallSpeechProvider,
+    speechProvider,
     isResolving: false,
   };
   await autoSnoozeCall();

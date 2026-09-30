@@ -2,8 +2,13 @@ import { authService } from '../../src/cloud/authService';
 import type { AuthResponseData } from '../../src/cloud/authService';
 import { cloudClient } from '../../src/cloud/cloudClient';
 import { userStore } from '../../src/storage/userStore';
+import { initDatabase } from '../../src/storage/dbInit';
 
 describe('authService profile refresh', () => {
+  beforeAll(async () => {
+    await initDatabase();
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
   });

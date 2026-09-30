@@ -82,8 +82,8 @@ android {
         applicationId "com.lafina"
         minSdkVersion 30
         targetSdkVersion 34
-        versionCode 4 // Increment this number for every new release
-        versionName "0.3.0" // human-readable version string
+        versionCode 8 // Increment this number for every new release
+        versionName "1.3.3" // human-readable version string
         ndk {
             abiFilters "arm64-v8a"
         }

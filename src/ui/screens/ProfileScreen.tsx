@@ -6,9 +6,7 @@ import {
   TouchableOpacity,
   ScrollView,
   Alert,
-  ActivityIndicator,
-  Modal,
-  TextInput,
+  Image,
 } from 'react-native';
 import { Colors, Fonts, Layout, Shadows } from '../theme';
 import { preferencesStore, tasksStore, notesStore, userStore } from '../../storage';
@@ -17,18 +15,21 @@ import type { User } from '../../storage';
 import { useTheme } from '../contexts/ThemeContext';
 import { useThemedStyles } from '../theme/createThemedStyles';
 import type { ThemeColors } from '../contexts/ThemeContext';
+import { APP_VERSION } from '../../appVersion';
 import { GUEST_USER_ID } from '../../constants';
 import { SvgXml } from 'react-native-svg';
 import { ARC_SCREEN_XML } from '../../assets/arc_screen_xml';
-import { Pencil } from 'lucide-react-native';
-import { accountLinkService } from '../../cloud/accountLinkService';
+import { Camera } from 'lucide-react-native';
 import { authService } from '../../cloud/authService';
-import { normalizeEmail } from '../../storage/authUtils';
+import { isStudentProAccount } from '../../cloud';
 
 // Profile sub-components
+import { avatarSource, pickAvatarImage, removeAvatarImage } from '../components/profile/avatarFile';
 import { ProfileStats } from '../components/profile/ProfileStats';
 import { SettingItem } from '../components/profile/SettingItem';
 import { PrivacyModal } from '../components/profile/PrivacyModal';
+import { StudentProTag } from '../components/profile/StudentProTag';
+import { AppUpdateItem } from '../components/profile/AppUpdateItem';
 import { PreferencesSettingsScreen } from './PreferencesSettingsScreen';
 
 function getInitials(username: string | null | undefined): string {
@@ -61,6 +62,8 @@ interface ProfileScreenProps {
   onRefresh: () => void;
   onLogout?: (isGuest?: boolean) => void;
   onNavigateToRegister?: () => void;
+  /** Runs the walkthrough again, from here. */
+  onReplayTour?: () => void;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
@@ -69,6 +72,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onRefresh,
   onLogout,
   onNavigateToRegister,
+  onReplayTour,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
@@ -88,15 +92,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   // Privacy Modal state
   const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
-  const [cloudLinkVisible, setCloudLinkVisible] = useState(false);
-  const [cloudPassword, setCloudPassword] = useState('');
-  const [cloudLinkError, setCloudLinkError] = useState<string | null>(null);
-  const [cloudLinking, setCloudLinking] = useState(false);
 
   const { colors, isDarkMode, toggleTheme } = useTheme();
-  const themed = useThemedStyles((c) => getProfileThemedStyles(c));
+  const themed = useThemedStyles(getProfileThemedStyles);
 
   const isGuest = userId === GUEST_USER_ID;
+  const photoSource = avatarSource(currentUser?.avatarUri ?? null);
+  // Read on every render with the user above: a sign-in that upgrades the
+  // plan reloads `currentUser`, and the tag follows without its own state.
+  const studentPro = currentUser ? isStudentProAccount(userId) : false;
 
   useEffect(() => {
     loadStats();
@@ -179,8 +183,49 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     setVoiceCommandsCount(voiceNotes + voiceTasks + 3);
   };
 
+  const choosePhoto = async () => {
+    const result = await pickAvatarImage();
+    if (result.status === 'cancelled') return;
+    if (result.status === 'failed') {
+      Alert.alert('Profile Photo', 'That image could not be used. Please try another one.');
+      return;
+    }
+    const previous = currentUser?.avatarUri ?? null;
+    userStore.setAvatarUri(userId, result.uri);
+    setCurrentUser(userStore.getUserById(userId));
+    // Only once the new photo is saved, so a failed write never leaves the
+    // profile pointing at a file that has already been deleted.
+    await removeAvatarImage(previous);
+    onRefresh();
+  };
+
+  const clearPhoto = async () => {
+    const previous = currentUser?.avatarUri ?? null;
+    userStore.setAvatarUri(userId, null);
+    setCurrentUser(userStore.getUserById(userId));
+    await removeAvatarImage(previous);
+    onRefresh();
+  };
+
   const handleEditProfile = () => {
-    Alert.alert('Edit Profile', 'Profile editor is not available in offline-first mode.');
+    const hasPhoto = Boolean(currentUser?.avatarUri);
+    Alert.alert(
+      'Profile Photo',
+      hasPhoto ? 'Change or remove your profile photo.' : 'Pick a photo from this device.',
+      [
+        { text: hasPhoto ? 'Choose New Photo' : 'Choose Photo', onPress: () => void choosePhoto() },
+        ...(hasPhoto
+          ? [
+              {
+                text: 'Remove Photo',
+                style: 'destructive' as const,
+                onPress: () => void clearPhoto(),
+              },
+            ]
+          : []),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
   };
 
   const handleClearData = () => {
@@ -212,54 +257,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       onNavigateToRegister();
     } else {
       Alert.alert('Create Account', 'Navigate to Register from the Welcome screen to create an account.');
-    }
-  };
-
-  const openCloudLink = () => {
-    setCloudPassword('');
-    setCloudLinkError(null);
-    setCloudLinkVisible(true);
-  };
-
-  const closeCloudLink = () => {
-    if (cloudLinking) {
-      return;
-    }
-    setCloudPassword('');
-    setCloudLinkError(null);
-    setCloudLinkVisible(false);
-  };
-
-  const handleCloudLink = async () => {
-    if (!cloudPassword) {
-      setCloudLinkError('Enter the password for the FastAPI cloud account.');
-      return;
-    }
-    setCloudLinking(true);
-    setCloudLinkError(null);
-    try {
-      const result = await accountLinkService.createOrLinkCloudAccount(
-        userId,
-        cloudPassword
-      );
-      if (result.status === 'success') {
-        setCloudPassword('');
-        setCloudLinkVisible(false);
-        loadSettings();
-        onRefresh();
-        Alert.alert(
-          'Cloud Account Linked',
-          `FastAPI authentication succeeded. Live cloud role: ${result.role || 'student'}.`
-        );
-      } else {
-        setCloudLinkError(result.message);
-      }
-    } catch (error: unknown) {
-      setCloudLinkError(
-        error instanceof Error ? error.message : 'FastAPI account linking failed.'
-      );
-    } finally {
-      setCloudLinking(false);
     }
   };
 
@@ -313,18 +310,36 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       {/* Avatar Section */}
       <View style={styles.avatarSection}>
         <View style={styles.avatarWrapper}>
-          <View style={[styles.avatarCircle, { backgroundColor: colors.blue }]}>
-            <Text style={[styles.avatarInitials, { color: colors.white }]}>
-              {getInitials(currentUser?.username)}
-            </Text>
-          </View>
-          <TouchableOpacity onPress={handleEditProfile} style={[styles.editBadge, Shadows.card]}>
-            <Pencil size={16} color={colors.textPrimary} />
+          <TouchableOpacity
+            onPress={handleEditProfile}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={photoSource ? 'Change profile photo' : 'Add a profile photo'}
+            style={[styles.avatarCircle, themed.avatarCircle, { backgroundColor: colors.blue }]}
+          >
+            {photoSource ? (
+              <Image source={photoSource} style={styles.avatarImage} resizeMode="cover" />
+            ) : (
+              <Text style={[styles.avatarInitials, { color: colors.white }]}>
+                {getInitials(currentUser?.username)}
+              </Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleEditProfile}
+            style={[styles.editBadge, themed.editBadge, Shadows.card]}
+            accessibilityRole="button"
+            accessibilityLabel={photoSource ? 'Change profile photo' : 'Add a profile photo'}
+          >
+            <Camera size={16} color={colors.textPrimary} />
           </TouchableOpacity>
         </View>
-        <Text style={[styles.userName, themed.userName]}>
-          {currentUser?.username || 'Student'}
-        </Text>
+        <View style={styles.nameRow}>
+          <Text style={[styles.userName, themed.userName]} numberOfLines={1}>
+            {currentUser?.username || 'Student'}
+          </Text>
+          {studentPro && <StudentProTag />}
+        </View>
         <Text style={[styles.userEmail, themed.userEmail]}>
           {currentUser?.email || 'No email set'}
         </Text>
@@ -408,24 +423,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               text="Dark Mode"
               type="toggle"
               value={isDarkMode}
-              onValueChange={toggleTheme}
+              onValueChange={(_enabled, origin) => toggleTheme(origin)}
             />
           </View>
-
-          {/* Cloud Account Group */}
-          {!isGuest && (
-            <>
-              <Text style={[styles.settingsGroupHeader, themed.settingsGroupHeader]}>Cloud Account</Text>
-              <View style={[styles.settingsGroupCard, Shadows.card, themed.settingsGroupCard]}>
-                <SettingItem
-                  text="Create or Link FastAPI Account"
-                  type="link"
-                  valueText={currentUser?.isCloudLinked ? 'Linked' : 'Offline-only'}
-                  onPress={openCloudLink}
-                />
-              </View>
-            </>
-          )}
 
           {/* Data Management Group */}
           <Text style={[styles.settingsGroupHeader, themed.settingsGroupHeader]}>Data Settings</Text>
@@ -444,9 +444,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <SettingItem
               text="App Version"
               type="value"
-              valueText="1.0.0 (Beta-Offline)"
+              valueText={`${APP_VERSION} (Mobile)`}
             />
             <View style={[styles.settingDivider, themed.settingDivider]} />
+            <AppUpdateItem />
+            <View style={[styles.settingDivider, themed.settingDivider]} />
+            {onReplayTour && (
+              <>
+                <SettingItem text="Show the walkthrough again" type="link" onPress={onReplayTour} />
+                <View style={[styles.settingDivider, themed.settingDivider]} />
+              </>
+            )}
             <SettingItem
               text="Privacy Policy"
               type="link"
@@ -484,66 +492,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         onClose={() => setPrivacyModalVisible(false)}
       />
 
-      <Modal
-        visible={cloudLinkVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeCloudLink}
-      >
-        <View style={styles.cloudModalOverlay}>
-          <View style={[styles.cloudModalCard, { backgroundColor: colors.cardBg }]}>
-            <Text style={[styles.cloudModalTitle, { color: colors.textPrimary }]}>
-              Create or Link FastAPI
-            </Text>
-            <Text style={[styles.cloudModalBody, { color: colors.textSecondary }]}>
-              Email being linked: {currentUser?.email ? normalizeEmail(currentUser.email) : ''}
-            </Text>
-            <Text style={[styles.cloudModalBody, { color: colors.textSecondary }]}>
-              Enter the password for the existing FastAPI account. If no cloud account exists,
-              this explicit action creates one. Your local password and local data are unchanged.
-            </Text>
-            <TextInput
-              value={cloudPassword}
-              onChangeText={setCloudPassword}
-              placeholder="FastAPI cloud password"
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!cloudLinking}
-              style={[
-                styles.cloudPasswordInput,
-                {
-                  color: colors.textPrimary,
-                  backgroundColor: colors.inputBg,
-                  borderColor: colors.border,
-                },
-              ]}
-            />
-            {cloudLinkError && (
-              <Text style={styles.cloudLinkError}>{cloudLinkError}</Text>
-            )}
-            <View style={styles.cloudModalActions}>
-              <TouchableOpacity
-                onPress={closeCloudLink}
-                disabled={cloudLinking}
-                style={[styles.cloudModalButton, styles.cloudModalCancel]}
-              >
-                <Text style={{ color: colors.textPrimary }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handleCloudLink}
-                disabled={cloudLinking}
-                style={[styles.cloudModalButton, styles.cloudModalConfirm]}
-              >
-                {cloudLinking
-                  ? <ActivityIndicator color={colors.white} />
-                  : <Text style={styles.cloudModalConfirmText}>Continue</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 };
@@ -558,6 +506,11 @@ const getProfileThemedStyles = (colors: ThemeColors) => ({
   settingText: { color: colors.textPrimary },
   settingValue: { color: colors.textSecondary },
   settingDivider: { backgroundColor: colors.divider },
+  // The ring reads as a cut-out in the header, and the badge as a small card
+  // sitting on it — both follow the surface, or the camera on the badge is
+  // drawn white on white in dark mode and disappears.
+  avatarCircle: { borderColor: colors.cardBg },
+  editBadge: { backgroundColor: colors.cardBg, borderColor: colors.border },
 });
 
 const styles = StyleSheet.create({
@@ -588,10 +541,14 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: 60,
     borderWidth: 4,
-    borderColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
     ...Shadows.card,
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   avatarInitials: {
     fontSize: 40,
@@ -605,17 +562,23 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    borderColor: '#F0F0F0',
   },
   mainContent: {
     paddingHorizontal: 16,
     paddingTop: 16,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: '100%',
+    paddingHorizontal: 24,
+  },
   userName: {
+    flexShrink: 1,
     fontSize: 18,
     fontFamily: Fonts.heading,
     fontWeight: 'bold',
@@ -701,64 +664,5 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 14,
     fontFamily: Fonts.body,
-  },
-  cloudModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  cloudModalCard: {
-    borderRadius: Layout.borderRadiusCard,
-    padding: 20,
-  },
-  cloudModalTitle: {
-    fontFamily: Fonts.heading,
-    fontSize: 19,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  cloudModalBody: {
-    fontFamily: Fonts.body,
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 10,
-  },
-  cloudPasswordInput: {
-    borderWidth: 1,
-    borderRadius: Layout.borderRadiusButton,
-    paddingHorizontal: 12,
-    minHeight: 46,
-    marginTop: 4,
-  },
-  cloudLinkError: {
-    color: Colors.error,
-    fontFamily: Fonts.body,
-    fontSize: 12,
-    marginTop: 8,
-  },
-  cloudModalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginTop: 18,
-  },
-  cloudModalButton: {
-    minWidth: 92,
-    minHeight: 42,
-    borderRadius: Layout.borderRadiusButton,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 10,
-  },
-  cloudModalCancel: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  cloudModalConfirm: {
-    backgroundColor: Colors.blue,
-  },
-  cloudModalConfirmText: {
-    color: Colors.textLight,
-    fontWeight: 'bold',
   },
 });

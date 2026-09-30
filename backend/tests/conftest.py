@@ -4,7 +4,7 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import backend.app.admin
+from backend.app.admin import set_admin_session_maker
 from backend.app.main import app
 from backend.app.database import Base, get_db
 from backend.app.models.account import Account  # noqa: F401
@@ -35,10 +35,21 @@ TestingSessionLocal = async_sessionmaker(
     autoflush=False
 )
 
-backend.app.admin.AsyncSessionLocal = TestingSessionLocal
+set_admin_session_maker(TestingSessionLocal)
+
+def rebind_admin_session_maker():
+    set_admin_session_maker(TestingSessionLocal)
+    if hasattr(app.state, "admin") and app.state.admin:
+        app.state.admin.engine = test_engine
+        app.state.admin.session_maker = TestingSessionLocal
+        for view in getattr(app.state.admin, "views", []):
+            view.session_maker = TestingSessionLocal
+
+rebind_admin_session_maker()
 
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def setup_test_db():
+    rebind_admin_session_maker()
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -57,6 +68,14 @@ async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 app.dependency_overrides[get_db] = override_get_db
+
+# Settings read backend/.env, which may hold a real Pinecone key: no test
+# reaches the Student Handbook index unless it installs its own retriever.
+# setdefault, because tests also import this module as backend.tests.conftest,
+# which runs it a second time and must not undo an override a test has set.
+from backend.app.api.v1.ai import get_handbook_retriever  # noqa: E402
+
+app.dependency_overrides.setdefault(get_handbook_retriever, lambda: None)
 
 @pytest_asyncio.fixture
 async def async_client():

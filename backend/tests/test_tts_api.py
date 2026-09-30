@@ -60,10 +60,10 @@ async def test_tts_unauthenticated_returns_401(async_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_tts_role_enforcement(async_client: AsyncClient):
     """
-    Exact role enforcement test:
-    - student -> 403
-    - admin -> 403
-    - student_pro -> 200
+    Role enforcement test:
+    - student -> 403 Forbidden
+    - admin -> 403 Forbidden
+    - student_pro -> 200 OK
     """
     app.state.gemini_tts_client = create_mock_gemini_client()
 
@@ -82,7 +82,7 @@ async def test_tts_role_enforcement(async_client: AsyncClient):
     assert res_student.status_code == 403
     assert "student_pro" in res_student.json()["detail"]
 
-    # 2. Promote user role in DB to admin -> must still return 403 for TTS
+    # 2. Promote user role in DB to admin -> must return 403 for TTS
     async with TestingSessionLocal() as db:
         stmt = select(Account).where(Account.email == "student_basic@ustp.edu.ph")
         acc = (await db.execute(stmt)).scalar_one()

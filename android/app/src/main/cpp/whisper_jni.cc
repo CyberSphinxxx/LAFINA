@@ -34,10 +34,35 @@ void assetClose(void *context) {
 }
 
 std::string trim(const std::string &value) {
-  const auto first = value.find_first_not_of(" \\n\\r\\t");
+  const auto first = value.find_first_not_of(" \n\r\t");
   if (first == std::string::npos) return "";
-  const auto last = value.find_last_not_of(" \\n\\r\\t");
+  const auto last = value.find_last_not_of(" \n\r\t");
   return value.substr(first, last - first + 1);
+}
+
+std::string escapeJson(const std::string &value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (char c : value) {
+    if (c == '"') {
+      escaped += "\\\"";
+    } else if (c == '\\') {
+      escaped += "\\\\";
+    } else if (c == '\b') {
+      escaped += "\\b";
+    } else if (c == '\f') {
+      escaped += "\\f";
+    } else if (c == '\n') {
+      escaped += "\\n";
+    } else if (c == '\r') {
+      escaped += "\\r";
+    } else if (c == '\t') {
+      escaped += "\\t";
+    } else if (static_cast<unsigned char>(c) >= 0x20) {
+      escaped += c;
+    }
+  }
+  return escaped;
 }
 }
 
@@ -129,6 +154,63 @@ Java_com_lafina_LafinaWhisperBridge_transcribe(
   }
   transcript = trim(transcript);
   return env->NewStringUTF(transcript.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_lafina_LafinaWhisperBridge_transcribeWithTimestamps(
+    JNIEnv *env,
+    jobject,
+    jlong contextPointer,
+    jfloatArray samples,
+    jint requestedThreads) {
+  auto *context = reinterpret_cast<whisper_context *>(contextPointer);
+  if (context == nullptr) return env->NewStringUTF("[]");
+  const jsize sampleCount = env->GetArrayLength(samples);
+  if (sampleCount <= 0) return env->NewStringUTF("[]");
+  jfloat *audio = env->GetFloatArrayElements(samples, nullptr);
+  if (audio == nullptr) return env->NewStringUTF("[]");
+
+  whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+  params.language = "en";
+  params.translate = false;
+  params.no_context = true;
+  params.no_timestamps = false;
+  params.single_segment = false;
+  params.print_progress = false;
+  params.print_realtime = false;
+  params.print_timestamps = false;
+  params.suppress_blank = true;
+  params.suppress_nst = true;
+  params.temperature = 0.0f;
+  params.max_tokens = 256;
+  params.audio_ctx = 0;
+  params.initial_prompt = kAcademicPrompt;
+  params.greedy.best_of = 1;
+  params.no_speech_thold = kDisabledNoSpeechThreshold;
+  params.n_threads = std::clamp(static_cast<int>(requestedThreads), 1, 4);
+
+  const int result = whisper_full(context, params, audio, sampleCount);
+  env->ReleaseFloatArrayElements(samples, audio, JNI_ABORT);
+
+  std::string json = "[";
+  if (result == 0) {
+    const int segmentCount = whisper_full_n_segments(context);
+    bool first = true;
+    for (int index = 0; index < segmentCount; ++index) {
+      const std::string segmentText = trim(whisper_full_get_segment_text(context, index));
+      if (segmentText.empty()) continue;
+      const int64_t t0 = static_cast<int64_t>(whisper_full_get_segment_t0(context, index)) * 10;
+      const int64_t t1 = static_cast<int64_t>(whisper_full_get_segment_t1(context, index)) * 10;
+      if (!first) json += ",";
+      first = false;
+      json += "{\"start_ms\":" + std::to_string(t0) + ",\"end_ms\":" + std::to_string(t1) +
+              ",\"text\":\"" + escapeJson(segmentText) + "\"}";
+    }
+  } else {
+    __android_log_print(ANDROID_LOG_ERROR, kTag, "whisper_full with timestamps failed: %d", result);
+  }
+  json += "]";
+  return env->NewStringUTF(json.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

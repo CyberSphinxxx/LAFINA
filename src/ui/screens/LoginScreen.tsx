@@ -6,7 +6,6 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   ScrollView,
-  StatusBar,
   Alert,
 } from 'react-native';
 import { Mail, Lock, Check } from 'lucide-react-native';
@@ -40,7 +39,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [rememberMe, setRememberMe] = useState(false);
 
   const { colors } = useTheme();
-  const themed = useThemedStyles((c) => getLoginThemedStyles(c));
+  const themed = useThemedStyles(getLoginThemedStyles);
 
   // Load saved credentials on mount [Fix #9]
   useEffect(() => {
@@ -99,7 +98,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         if (result.status === 'local_only') {
           Alert.alert(
             'Signed In for Offline Mode',
-            `${result.message}\n\nUse Profile > Cloud Account to create or link FastAPI without changing your local password or data.`
+            `${result.message}\n\nLAFINA will retry automatic FastAPI linking on startup or when the app resumes with internet access.`
           );
         }
 
@@ -117,16 +116,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   return (
     <KeyboardAvoidingView
       behavior={'height'}
-      style={[styles.container, themed.container]}
+      style={styles.container}
     >
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} />
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
         
-        {/* Header Section */}
-        <AuthHeader />
-
         {/* Card Form */}
         <View style={[styles.card, Shadows.card, themed.card]}>
+          <AuthHeader />
           <Text style={[styles.cardTitle, themed.cardTitle]}>Welcome Back</Text>
           <Text style={[styles.cardSubtitle, themed.cardSubtitle]}>Sign in to access your offline schedule</Text>
 
@@ -180,14 +176,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             onPress={handleLogin}
             loading={loading}
           />
-        </View>
 
-        {/* Footer Navigation */}
-        <View style={styles.footer}>
-          <Text style={[styles.footerText, themed.footerText]}>Don't have an account? </Text>
-          <TouchableOpacity onPress={onNavigateToRegister}>
-            <Text style={styles.registerLink}>Register</Text>
-          </TouchableOpacity>
+          {/* Footer Navigation */}
+          <View style={styles.footer}>
+            <Text style={[styles.footerText, themed.footerText]}>Don't have an account? </Text>
+            <TouchableOpacity onPress={onNavigateToRegister}>
+              <Text style={[styles.registerLink, themed.link]}>Register</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
       </ScrollView>
@@ -196,10 +192,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 };
 
 const getLoginThemedStyles = (colors: ThemeColors) => ({
-  container: { backgroundColor: colors.background },
   card: { backgroundColor: colors.cardBg },
   cardTitle: { color: colors.textPrimary },
   cardSubtitle: { color: colors.textSecondary },
+  link: { color: colors.blue },
   rememberMeText: { color: colors.textSecondary },
   checkbox: { borderColor: colors.border, backgroundColor: colors.cardBg },
   checkboxChecked: { backgroundColor: colors.blue, borderColor: colors.blue },
@@ -224,10 +220,12 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.heading,
     fontSize: 20,
     fontWeight: 'bold',
+    textAlign: 'center',
   },
   cardSubtitle: {
     fontFamily: Fonts.body,
     fontSize: 13,
+    textAlign: 'center',
     marginTop: 4,
     marginBottom: 20,
   },
@@ -271,7 +269,6 @@ const styles = StyleSheet.create({
   },
   registerLink: {
     fontFamily: Fonts.body,
-    color: Colors.red,
     fontWeight: 'bold',
     fontSize: 14,
     textDecorationLine: 'underline',

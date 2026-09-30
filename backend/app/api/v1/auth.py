@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, EmailStr
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, update
 
@@ -12,7 +12,14 @@ from backend.app.models.session import AuthSession
 from backend.app.models.recovery import RecoveryCode
 from backend.app.security.auth import (
     hash_password, verify_password, create_access_token, generate_refresh_token,
-    hash_token, get_current_user_and_session, normalize_email, validate_password_strength
+    hash_token, get_current_user_and_session, normalize_email, validate_password_strength,
+    dummy_password_hash,
+)
+from backend.app.security import login_throttle
+
+from backend.app.services.capabilities import (
+    BusinessSessionData,
+    resolve_account_capabilities,
 )
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -35,6 +42,10 @@ class RecoverRequest(BaseModel):
     recovery_code: str
     new_password: str
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
 class AuthTokenResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -43,12 +54,18 @@ class AuthTokenResponse(BaseModel):
     user_id: str
     email: str
     role: str
+    system_role: str = "user"
+    subscription_plan: str = "student"
     recovery_codes: list[str] | None = None
 
 class UserProfileResponse(BaseModel):
     id: str
     email: str
     role: str
+    system_role: str = "user"
+    subscription_plan: str = "student"
+    effective_subscription_plan: str = "student"
+    business_session: BusinessSessionData | None = None
     is_active: bool
     created_at: str
 
@@ -94,18 +111,50 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
         user_id=str(account.id),
         email=account.email,
         role=account.role,
+        system_role=account.system_role,
+        subscription_plan=account.subscription_plan,
         recovery_codes=raw_recovery_codes
     )
 
 @router.post("/login", response_model=AuthTokenResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     validate_password_strength(req.password)
     normalized_email = normalize_email(str(req.email))
+
+    # Refused before the password is looked at, so a guesser learns nothing
+    # more once the limit is reached, and the answer is the same whether or
+    # not the email has an account.
+    throttle_key = login_throttle.email_key(normalized_email)
+    retry_after = await login_throttle.seconds_until_allowed(
+        db, throttle_key, datetime.now(timezone.utc)
+    )
+    if retry_after is not None:
+        minutes = max(1, -(-retry_after // 60))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many sign-in attempts for this email. "
+                f"Try again in {minutes} minute{'s' if minutes != 1 else ''}."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
     stmt = select(Account).where(func.lower(Account.email) == normalized_email)
     res = await db.execute(stmt)
     account = res.scalar_one_or_none()
 
-    if not account or not verify_password(req.password, account.password_hash):
+    # An unknown email is checked against a stand-in hash, so it takes as long
+    # to refuse as a wrong password and the timing does not reveal it.
+    password_ok = verify_password(
+        req.password, account.password_hash if account else dummy_password_hash()
+    )
+    if not account or not password_ok:
+        await login_throttle.record_failure(
+            db,
+            throttle_key,
+            owner_id=account.id if account else None,
+            ip_address=request.client.host if request.client else None,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
     if not account.is_active:
@@ -132,7 +181,9 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         refresh_token=raw_refresh,
         user_id=str(account.id),
         email=account.email,
-        role=account.role
+        role=account.role,
+        system_role=account.system_role,
+        subscription_plan=account.subscription_plan,
     )
 
 @router.post("/refresh", response_model=AuthTokenResponse)
@@ -184,7 +235,9 @@ async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
         refresh_token=new_raw_refresh,
         user_id=str(account.id),
         email=account.email,
-        role=account.role
+        role=account.role,
+        system_role=account.system_role,
+        subscription_plan=account.subscription_plan,
     )
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -236,13 +289,64 @@ async def recover(req: RecoverRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"detail": "Password successfully reset. Please log in with your new password."}
 
+@router.post("/password", status_code=status.HTTP_200_OK)
+async def change_password(
+    req: ChangePasswordRequest,
+    auth_data: tuple[Account, AuthSession] = Depends(get_current_user_and_session),
+    db: AsyncSession = Depends(get_db),
+):
+    """Changes the password of the signed-in account.
+
+    The current password is required, so a borrowed access token alone cannot
+    lock the owner out. Every other session is revoked because a password
+    change is what someone does when they think a device is compromised; the
+    session making the change survives so the app stays signed in.
+    """
+    account, session = auth_data
+
+    # 400 rather than 401: the request itself is authenticated, and a client
+    # that reads 401 as "session expired" would sign the user out over a typo.
+    if not verify_password(req.current_password, account.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    validate_password_strength(req.new_password)
+
+    if verify_password(req.new_password, account.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The new password must be different from the current one.",
+        )
+
+    account.password_hash = hash_password(req.new_password)
+
+    await db.execute(
+        update(AuthSession)
+        .where(AuthSession.owner_id == account.id, AuthSession.id != session.id)
+        .values(is_revoked=True)
+    )
+
+    await db.commit()
+    return {"detail": "Password changed. Other devices will need the new password."}
+
 @router.get("/me", response_model=UserProfileResponse)
-async def get_me(auth_data: tuple[Account, AuthSession] = Depends(get_current_user_and_session)):
+async def get_me(
+    auth_data: tuple[Account, AuthSession] = Depends(get_current_user_and_session),
+    db: AsyncSession = Depends(get_db),
+):
     account, _ = auth_data
+    cap_res = await resolve_account_capabilities(account, db)
+
     return UserProfileResponse(
         id=str(account.id),
         email=account.email,
         role=account.role,
+        system_role=cap_res.system_role,
+        subscription_plan=cap_res.subscription_plan,
+        effective_subscription_plan=cap_res.effective_subscription_plan,
+        business_session=cap_res.business_session,
         is_active=account.is_active,
-        created_at=account.created_at.isoformat()
+        created_at=account.created_at.isoformat(),
     )

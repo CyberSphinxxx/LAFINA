@@ -1,8 +1,9 @@
 import { generateId } from '../utils';
-import { db } from './database';
+import { db, DatabaseTransaction } from './database';
 import { hashPassword, normalizeEmail, validatePassword, verifyPassword } from './authUtils';
 import { GUEST_USER_ID, GUEST_USERNAME } from '../constants';
 import { syncOutboxStore } from './syncOutboxStore';
+import { buildProfileSyncPayload } from './profileSyncPayload';
 
 export interface User {
   id: string;
@@ -16,6 +17,8 @@ export interface User {
   cloudAccountId: string | null;
   isCloudLinked: boolean;
   cloudLinkedAt: string | null;
+  /** Profile photo, as a path in the app's own storage. Null means initials. */
+  avatarUri: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,9 +41,27 @@ const mapStoredUser = (row: StoredUserRow): User => ({
   isCloudLinked: row.cloud_linked === 1,
   cloudLinkedAt:
     typeof row.cloud_linked_at === 'string' ? row.cloud_linked_at : null,
+  avatarUri: typeof row.avatar_uri === 'string' && row.avatar_uri ? row.avatar_uri : null,
   createdAt: String(row.created_at),
   updatedAt: String(row.updated_at),
 });
+
+const enqueueProfileMutation = (
+  userId: string,
+  operation: 'create' | 'update',
+  tx: DatabaseTransaction,
+): void => {
+  syncOutboxStore.enqueueMutation(
+    userId,
+    'profile',
+    'profile',
+    operation,
+    buildProfileSyncPayload(userId, tx),
+    'account',
+    userId,
+    tx,
+  );
+};
 
 // Ensure active_session table exists with auth token persistence columns
 try {
@@ -49,6 +70,7 @@ try {
       user_id TEXT PRIMARY KEY,
       access_token TEXT,
       refresh_token TEXT,
+      pending_cloud_credential TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -58,6 +80,9 @@ try {
   } catch {}
   try {
     db.executeSync('ALTER TABLE active_session ADD COLUMN refresh_token TEXT');
+  } catch {}
+  try {
+    db.executeSync('ALTER TABLE active_session ADD COLUMN pending_cloud_credential TEXT');
   } catch {}
 } catch (e) {
   console.error('Error creating active_session table:', e);
@@ -93,6 +118,7 @@ export const userStore = {
       email: null,
       role: 'guest',
       isNewUser: true,
+      avatarUri: null,
       timeFormat24h: false,
       weekStartsMonday: false,
       darkModeEnabled: false,
@@ -136,25 +162,73 @@ export const userStore = {
     const hash = await hashPassword(password);
 
     try {
-      db.executeSync(
-        `INSERT INTO users (id, username, email, password_hash, role, is_new_user, time_format_24h, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, username, normalizedEmail, hash, 'student', 1, 0, now, now]
-      );
-      try {
-        syncOutboxStore.enqueueMutation('profile', id, 'create', {
-          username,
-          time_format_24h: false,
-          week_starts_monday: false,
-          dark_mode: false,
-        });
-      } catch (e) {
-        console.warn('Failed to enqueue profile mutation to outbox:', e);
-      }
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `INSERT INTO users (
+             id, username, email, password_hash, role, is_new_user, time_format_24h,
+             week_starts_monday, dark_mode, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, username, normalizedEmail, hash, 'student', 1, 0, 0, 0, now, now],
+        );
+        enqueueProfileMutation(id, 'create', tx);
+      });
       return id;
     } catch (error) {
       console.error('Error registering user:', error);
       throw error;
     }
+  },
+
+  /**
+   * Creates the local copy of an account that already exists in FastAPI, after
+   * FastAPI has accepted `password` for exactly this email.
+   *
+   * Nothing is queued for sync: the server already has the real profile, and
+   * the first sync brings it down. A profile queued from here would overwrite
+   * it with the placeholder name. Onboarding is skipped for the same reason:
+   * the account was set up on the device that created it.
+   *
+   * Refuses rather than reuses a local account that appeared for the same
+   * email or cloud account in the meantime, since that account's own password
+   * was never checked.
+   */
+  createFromCloud: async (input: {
+    email: string;
+    password: string;
+    cloudAccountId: string;
+    role: string;
+  }): Promise<string> => {
+    const normalizedEmail = normalizeEmail(input.email);
+    if (!normalizedEmail) throw new Error('A cloud account needs an email address.');
+    if (!input.cloudAccountId) throw new Error('A cloud account needs its id.');
+    // Hashing is slow, so it happens before the transaction rather than inside it.
+    const hash = await hashPassword(input.password);
+    const now = new Date().toISOString();
+    // A readable stand-in until the first sync brings the real name down.
+    const placeholderName = normalizedEmail.split('@')[0] || 'LAFINA user';
+    const id = generateId('user');
+
+    db.transactionSync((tx) => {
+      const rows = tx.executeSync('SELECT id, email, cloud_account_id FROM users').rows ?? [];
+      const clash = rows.find(
+        (row: StoredUserRow) =>
+          normalizeEmail(typeof row.email === 'string' ? row.email : '') === normalizedEmail ||
+          row.cloud_account_id === input.cloudAccountId
+      );
+      if (clash) {
+        throw new Error('This account is already on this phone.');
+      }
+      tx.executeSync(
+        `INSERT INTO users (
+           id, username, email, password_hash, role, is_new_user, time_format_24h,
+           week_starts_monday, dark_mode, cloud_account_id, cloud_linked, cloud_linked_at,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, 1, ?, ?, ?)`,
+        [id, placeholderName, normalizedEmail, hash, input.role || 'student',
+          input.cloudAccountId, now, now, now],
+      );
+    });
+    return id;
   },
 
   /**
@@ -286,23 +360,73 @@ export const userStore = {
   },
 
   /**
-   * Retrieves active session user ID and persisted auth tokens.
+   * Stores an Android-Keystore-encrypted credential for a deferred FastAPI link.
    */
-  getActiveSessionToken: (): { userId: string | null; accessToken: string | null; refreshToken: string | null } => {
+  savePendingCloudCredential: (userId: string, encryptedCredential: string): void => {
+    const now = new Date().toISOString();
     try {
-      const res = db.executeSync('SELECT user_id, access_token, refresh_token FROM active_session LIMIT 1');
+      db.executeSync(
+        `UPDATE active_session
+         SET pending_cloud_credential = ?, updated_at = ?
+         WHERE user_id = ?`,
+        [encryptedCredential, now, userId]
+      );
+    } catch (error) {
+      console.error('Error saving deferred cloud credential:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Erases the deferred FastAPI credential after linking or a permanent failure.
+   */
+  clearPendingCloudCredential: (userId: string): void => {
+    const now = new Date().toISOString();
+    try {
+      db.executeSync(
+        `UPDATE active_session
+         SET pending_cloud_credential = NULL, updated_at = ?
+         WHERE user_id = ?`,
+        [now, userId]
+      );
+    } catch (error) {
+      console.error('Error clearing deferred cloud credential:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Retrieves the active user, persisted auth tokens, and encrypted deferred credential.
+   */
+  getActiveSessionToken: (): {
+    userId: string | null;
+    accessToken: string | null;
+    refreshToken: string | null;
+    pendingCloudCredential?: string | null;
+  } => {
+    try {
+      const res = db.executeSync(
+        `SELECT user_id, access_token, refresh_token, pending_cloud_credential
+         FROM active_session LIMIT 1`
+      );
       if (res.rows && res.rows.length > 0) {
         const row = res.rows[0];
         return {
           userId: row.user_id || null,
           accessToken: row.access_token || null,
           refreshToken: row.refresh_token || null,
+          pendingCloudCredential: row.pending_cloud_credential || null,
         };
       }
     } catch (e) {
       console.error('Error getting active session token:', e);
     }
-    return { userId: null, accessToken: null, refreshToken: null };
+    return {
+      userId: null,
+      accessToken: null,
+      refreshToken: null,
+      pendingCloudCredential: null,
+    };
   },
 
   /**
@@ -313,7 +437,7 @@ export const userStore = {
     try {
       db.executeSync(
         `UPDATE users SET is_new_user = 0, updated_at = ? WHERE id = ?`,
-        [now, userId]
+        [now, userId],
       );
     } catch (error) {
       console.error('Error marking onboarding complete:', error);
@@ -384,10 +508,13 @@ export const userStore = {
   set24HourFormat: (userId: string, enabled: boolean): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE users SET time_format_24h = ?, updated_at = ? WHERE id = ?`,
-        [enabled ? 1 : 0, now, userId]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE users SET time_format_24h = ?, updated_at = ? WHERE id = ?`,
+          [enabled ? 1 : 0, now, userId],
+        );
+        enqueueProfileMutation(userId, 'update', tx);
+      });
     } catch (error) {
       console.error('Error saving 24-hour time format setting:', error);
       throw error;
@@ -416,13 +543,36 @@ export const userStore = {
   /**
    * Updates whether the week starts on Monday setting for a specific user.
    */
+  /**
+   * Points a user at their profile photo, or clears it with null.
+   *
+   * Deliberately not enqueued for sync: the value is a path on this device,
+   * which would mean nothing to the server or to another phone.
+   */
+  setAvatarUri: (userId: string, uri: string | null): void => {
+    const now = new Date().toISOString();
+    try {
+      db.executeSync(`UPDATE users SET avatar_uri = ?, updated_at = ? WHERE id = ?`, [
+        uri,
+        now,
+        userId,
+      ]);
+    } catch (error) {
+      console.error('Error saving profile photo:', error);
+      throw error;
+    }
+  },
+
   setWeekStartsMonday: (userId: string, enabled: boolean): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE users SET week_starts_monday = ?, updated_at = ? WHERE id = ?`,
-        [enabled ? 1 : 0, now, userId]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE users SET week_starts_monday = ?, updated_at = ? WHERE id = ?`,
+          [enabled ? 1 : 0, now, userId],
+        );
+        enqueueProfileMutation(userId, 'update', tx);
+      });
     } catch (error) {
       console.error('Error saving week starts on Monday setting:', error);
       throw error;
@@ -454,10 +604,13 @@ export const userStore = {
   setDarkModeEnabled: (userId: string, enabled: boolean): void => {
     const now = new Date().toISOString();
     try {
-      db.executeSync(
-        `UPDATE users SET dark_mode = ?, updated_at = ? WHERE id = ?`,
-        [enabled ? 1 : 0, now, userId]
-      );
+      db.transactionSync((tx) => {
+        tx.executeSync(
+          `UPDATE users SET dark_mode = ?, updated_at = ? WHERE id = ?`,
+          [enabled ? 1 : 0, now, userId],
+        );
+        enqueueProfileMutation(userId, 'update', tx);
+      });
     } catch (error) {
       console.error('Error saving dark mode setting:', error);
       throw error;

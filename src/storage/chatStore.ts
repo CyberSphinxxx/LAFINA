@@ -1,10 +1,24 @@
 import { db } from './database';
 
+/**
+ * A file the assistant generated for this reply. The bytes live in the
+ * attachments folder under `uri`; the message keeps what the chat needs to
+ * show the file and share a copy of it.
+ */
+export interface ChatAttachment {
+  uri: string;
+  fileName: string;
+  format: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   sender: 'user' | 'assistant';
   content: string;
+  attachment?: ChatAttachment | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -18,6 +32,24 @@ export interface ChatSession {
 }
 
 const DEFAULT_SESSION_ID = 'default_chat_session';
+
+/** Reads a stored attachment, treating anything malformed as no attachment. */
+const parseAttachment = (raw: unknown): ChatAttachment | null => {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<ChatAttachment>;
+    if (typeof value?.uri !== 'string' || typeof value.fileName !== 'string') return null;
+    return {
+      uri: value.uri,
+      fileName: value.fileName,
+      format: typeof value.format === 'string' ? value.format : '',
+      mimeType: typeof value.mimeType === 'string' ? value.mimeType : '',
+      sizeBytes: typeof value.sizeBytes === 'number' ? value.sizeBytes : 0,
+    };
+  } catch {
+    return null;
+  }
+};
 
 export const chatStore = {
   /**
@@ -56,6 +88,7 @@ export const chatStore = {
         sessionId: row.session_id,
         sender: row.sender as 'user' | 'assistant',
         content: row.content,
+        attachment: parseAttachment(row.attachment_json),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }));
@@ -68,18 +101,39 @@ export const chatStore = {
   /**
    * Inserts a new chat message into the database.
    */
-  insertMessage: (msg: { id: string; sessionId: string; sender: 'user' | 'assistant'; content: string }): void => {
+  insertMessage: (msg: {
+    id: string;
+    sessionId: string;
+    sender: 'user' | 'assistant';
+    content: string;
+    attachment?: ChatAttachment | null;
+  }): void => {
     const now = new Date().toISOString();
     try {
       db.executeSync(
-        `INSERT INTO messages (id, session_id, sender, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        [msg.id, msg.sessionId, msg.sender, msg.content, now, now]
+        `INSERT INTO messages (id, session_id, sender, content, attachment_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          msg.id,
+          msg.sessionId,
+          msg.sender,
+          msg.content,
+          msg.attachment ? JSON.stringify(msg.attachment) : null,
+          now,
+          now,
+        ]
       );
     } catch (error) {
       console.error('Error inserting chat message:', error);
       throw error;
     }
   },
+
+  /** Where the files attached to the conversation are, so clearing it can delete them. */
+  getAttachmentUris: (userId: string): string[] =>
+    chatStore
+      .getMessages(userId)
+      .map((message) => message.attachment?.uri)
+      .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
 
   /**
    * Clears chat history for the user's default session.

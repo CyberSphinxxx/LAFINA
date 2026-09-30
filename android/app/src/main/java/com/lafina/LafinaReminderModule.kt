@@ -18,6 +18,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -28,12 +29,57 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import org.json.JSONObject
 
 class LafinaReminderModule(private val reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext), ActivityEventListener {
+    ReactContextBaseJavaModule(reactContext), ActivityEventListener, LifecycleEventListener {
 
   private var activeRingtone: Ringtone? = null
 
   init {
     reactContext.addActivityEventListener(this)
+    reactContext.addLifecycleEventListener(this)
+  }
+
+  // Timer alarms stay quiet while the app is in front; its own timer rings.
+  override fun onHostResume() {
+    LafinaTimerAlarms.isHostResumed = true
+  }
+
+  override fun onHostPause() {
+    LafinaTimerAlarms.isHostResumed = false
+  }
+
+  override fun onHostDestroy() {
+    LafinaTimerAlarms.isHostResumed = false
+  }
+
+  /** Schedules an end-of-phase notification for an app timer such as the Pomodoro. */
+  @ReactMethod
+  fun scheduleTimerAlarm(options: ReadableMap, promise: Promise) {
+    try {
+      val timerId = options.getString("id")?.trim().orEmpty()
+      val triggerAtMs = options.getDouble("triggerAtMs").toLong()
+      require(timerId.isNotEmpty()) { "id is required" }
+      require(triggerAtMs > System.currentTimeMillis()) { "triggerAtMs must be in the future" }
+      LafinaTimerAlarms.schedule(
+          reactContext,
+          timerId,
+          triggerAtMs,
+          options.getString("title") ?: "",
+          options.getString("body") ?: ""
+      )
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("TIMER_ALARM_ERROR", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun cancelTimerAlarm(timerId: String, promise: Promise) {
+    try {
+      LafinaTimerAlarms.cancel(reactContext, timerId)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("TIMER_ALARM_ERROR", e.message, e)
+    }
   }
 
   override fun getName(): String = "LafinaReminder"

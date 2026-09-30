@@ -2,17 +2,8 @@ import type { Task, Event, TimeBlock } from '../../../storage';
 import { ImportBatch } from '../../../storage/importedBatchesStore';
 
 // ── View Modes ──
-export type ViewMode = 'month' | 'week' | 'day';
-
-// ── Feed Item ──
-export interface FeedItem {
-  type: 'task' | 'event' | 'block';
-  id: string;
-  title: string;
-  time: string;
-  endTime?: string;
-  item: Task | Event | TimeBlock;
-}
+/** The week view shows the chosen day's timeline under its strip, so there is no separate day view. */
+export type ViewMode = 'month' | 'week';
 
 // ── CalendarScreen Props ──
 export interface CalendarScreenProps {
