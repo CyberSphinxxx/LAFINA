@@ -99,4 +99,4 @@ __pycache__/
 
 # manual ignores
 android/gradle.properties
-RELEASE.md
+RELEASE.md*.db
