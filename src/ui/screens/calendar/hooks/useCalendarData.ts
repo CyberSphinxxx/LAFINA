@@ -10,6 +10,7 @@ import { generateIcsString, parseIcsString } from '../../../../storage/icsHelper
 import { pick, isErrorWithCode, errorCodes } from '@react-native-documents/picker';
 import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
+import { formatStoredDate } from '../../../../utils/dateFormat';
 import { Alert } from 'react-native';
 import {
   persistImportedCalendarBatch,
@@ -404,7 +405,7 @@ export const useCalendarData = (options: UseCalendarDataOptions): CalendarData &
       }
 
       const buttons = fetchedBatches.map((batch) => {
-        const dateFormatted = new Date(batch.timestamp).toLocaleDateString('en-US', {
+        const dateFormatted = formatStoredDate(batch.timestamp, {
           month: 'short',
           day: 'numeric',
           hour: '2-digit',

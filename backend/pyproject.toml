@@ -45,6 +45,21 @@ dev = [
 target-version = "py312"
 line-length = 100
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom evaluates these callables once, at import
+# time, by design. Exempting them keeps B008 useful for real argument defaults.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+    "fastapi.Security",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -33,11 +33,40 @@ interface OfflineSpeechNativeModule {
 let captureSequence = 0;
 let activeCaptureId: string | null = null;
 
+/**
+ * Hard ceiling on how long one capture may own the shared microphone slot.
+ *
+ * A native result that never settles (killed audio HAL, wedged Whisper inference)
+ * would otherwise keep `activeCaptureId` set for the life of the process, so every
+ * later recording throws "another capture is already active" and voice input is
+ * dead until the app restarts.
+ */
+const MAX_CAPTURE_DURATION_MS = 90_000;
+
 const getNativeModule = (): OfflineSpeechNativeModule | null => {
   const module = NativeModules.LafinaSpeechToText as
     | OfflineSpeechNativeModule
     | undefined;
   return module?.startListening ? module : null;
+};
+
+/**
+ * Stops a capture whose watchdog expired, ignoring any native failure.
+ *
+ * The microphone is released defensively: a timed-out capture must not keep
+ * recording underneath the next one.
+ */
+const releaseTimedOutCapture = (
+  module: OfflineSpeechNativeModule,
+  captureId: string,
+): void => {
+  try {
+    void module.cancelListening(captureId).catch((error: unknown) => {
+      console.warn('[SpeechCapture] Could not cancel the timed-out capture:', error);
+    });
+  } catch (error) {
+    console.warn('[SpeechCapture] Could not cancel the timed-out capture:', error);
+  }
 };
 
 /**
@@ -65,19 +94,33 @@ export const startOfflineSpeechCapture = (
   captureSequence += 1;
   const captureId = `${options.context}-${Date.now()}-${captureSequence}`;
   activeCaptureId = captureId;
-  const result = module
-    .startListening({ ...options, captureId })
-    .then(nativeResult => {
+
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  const captureTimeout = new Promise<never>((_resolve, reject) => {
+    watchdog = setTimeout(() => {
+      releaseTimedOutCapture(module, captureId);
+      reject(
+        new Error(
+          `Offline speech capture exceeded ${MAX_CAPTURE_DURATION_MS}ms and was stopped.`,
+        ),
+      );
+    }, MAX_CAPTURE_DURATION_MS);
+  });
+
+  const result = Promise.race([
+    module.startListening({ ...options, captureId }).then(nativeResult => {
       if (nativeResult.captureId !== captureId) {
         throw new Error(
           'Offline speech result did not match the active capture owner.',
         );
       }
       return nativeResult;
-    })
-    .finally(() => {
-      if (activeCaptureId === captureId) activeCaptureId = null;
-    });
+    }),
+    captureTimeout,
+  ]).finally(() => {
+    if (watchdog) clearTimeout(watchdog);
+    if (activeCaptureId === captureId) activeCaptureId = null;
+  });
   return { captureId, result };
 };
 

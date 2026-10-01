@@ -5,6 +5,7 @@ export {
   stopSchedulerDaemon,
   checkAndTriggerReminders,
   reconcileBusinessAssignmentReminders,
+  recoverOrphanedReminderCalls,
 } from './reminderScheduler';
 export {
   answerCall,

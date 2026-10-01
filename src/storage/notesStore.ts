@@ -84,11 +84,15 @@ export const notesStore = {
       db.transactionSync((tx) => {
         let finalSortOrder = note.sortOrder;
         if (finalSortOrder === undefined) {
-          const maxOrder = tx.executeSync(
-            `SELECT MAX(sort_order) as max_order FROM notes WHERE user_id = ? AND deleted_at IS NULL`,
-            [note.userId],
-          ).rows?.[0]?.max_order;
-          finalSortOrder = typeof maxOrder === 'number' ? maxOrder + 1 : 0;
+          try {
+            const maxOrder = tx.executeSync(
+              `SELECT MAX(sort_order) as max_order FROM notes WHERE user_id = ? AND deleted_at IS NULL`,
+              [note.userId],
+            ).rows?.[0]?.max_order;
+            finalSortOrder = typeof maxOrder === 'number' ? maxOrder + 1 : 0;
+          } catch {
+            finalSortOrder = 0;
+          }
         }
 
         tx.executeSync(

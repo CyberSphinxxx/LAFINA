@@ -26,6 +26,7 @@ import {
   formatDuration,
   productTourStore,
 } from './src/storage';
+import { cleanOrphanedAudioCache } from './src/ai';
 import {
   CustomTabBar,
   TabType,
@@ -33,6 +34,7 @@ import {
   ToolTab,
   isToolTab,
 } from './src/ui/components/CustomTabBar';
+import { ErrorBoundary } from './src/ui/components/ErrorBoundary';
 import {
   RadialMenu,
   RADIAL_MIC_KEY,
@@ -51,6 +53,7 @@ import {
   openExactAlarmSettings,
   openFullScreenIntentSettings,
   reconcileReminderAlarms,
+  recoverOrphanedReminderCalls,
 } from './src/scheduler';
 import type { NativeCallAction, NativeCallTrigger } from './src/scheduler';
 import { syncWorker } from './src/sync/syncWorker';
@@ -227,7 +230,28 @@ function AppContent({
 
     applyCapabilityState(userId);
 
-    void reconcileReminderAlarms(remindersStore.getPendingReminders(userId));
+    // Recover first: a call interrupted by the process being killed is still marked
+    // 'triggered' and would otherwise never ring again. Recovering re-arms it, so the
+    // reconciliation pass below then has a future trigger time to schedule.
+    void (async (): Promise<void> => {
+      try {
+        await recoverOrphanedReminderCalls(userId);
+      } catch (error) {
+        console.error('[App] Failed to recover interrupted reminder calls:', error);
+      }
+      await reconcileReminderAlarms(remindersStore.getPendingReminders(userId));
+    })();
+    // Synthesized announcements are cached per phrase, so the directory grows with
+    // every distinct task title. Sweep files nothing has touched in a day.
+    void cleanOrphanedAudioCache()
+      .then(removed => {
+        if (removed > 0) {
+          console.log(`[App] Removed ${removed} stale TTS audio file(s).`);
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('[App] Audio cache sweep note:', error);
+      });
     void (async (): Promise<void> => {
       let status = await getReminderPermissionStatus();
       if (status && !status.notificationsEnabled) {
@@ -792,7 +816,15 @@ function AppContent({
         <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} />
 
         {/* Render Active Page Content */}
-        <View style={styles.content}>{renderScreen()}</View>
+        <View style={styles.content}>
+          <ErrorBoundary
+            label="This screen"
+            resetKey={activeTab}
+            onReset={triggerRefresh}
+          >
+            {renderScreen()}
+          </ErrorBoundary>
+        </View>
 
         {/* Floating Custom Bottom Tab Bar; hold the Mic for the radial menu */}
         {!isKeyboardVisible && (
@@ -817,20 +849,28 @@ function AppContent({
         />
 
         {/* Voice Assistant Modal */}
-        <VoiceModal visible={voiceVisible} userId={userId} onClose={handleVoiceClose} />
+        <ErrorBoundary label="The voice assistant" resetKey={voiceVisible}>
+          <VoiceModal visible={voiceVisible} userId={userId} onClose={handleVoiceClose} />
+        </ErrorBoundary>
 
         {/* Proactive Incoming Call Screen */}
-        <IncomingCallScreen
-          visible={callVisible}
-          reminderId={callReminderId}
-          task={callTask}
-          userId={userId}
-          initialAction={callAction}
-          onClose={() => {
-            setCallVisible(false);
-            triggerRefresh();
-          }}
-        />
+        <ErrorBoundary
+          label="The reminder call"
+          resetKey={callReminderId}
+          onReset={triggerRefresh}
+        >
+          <IncomingCallScreen
+            visible={callVisible}
+            reminderId={callReminderId}
+            task={callTask}
+            userId={userId}
+            initialAction={callAction}
+            onClose={() => {
+              setCallVisible(false);
+              triggerRefresh();
+            }}
+          />
+        </ErrorBoundary>
 
         {/* Team Management Modal for Managers */}
         <TeamManagementModal
@@ -885,9 +925,13 @@ function App() {
   const [userId, setUserId] = useState<string | null>(null);
 
   return (
-    <ThemeProvider userId={userId}>
-      <AppContent userId={userId} setUserId={setUserId} />
-    </ThemeProvider>
+    // Last line of defence: a failure anywhere below shows a recovery screen
+    // instead of unmounting the activity and dropping the student to the home screen.
+    <ErrorBoundary label="LAFINA">
+      <ThemeProvider userId={userId}>
+        <AppContent userId={userId} setUserId={setUserId} />
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

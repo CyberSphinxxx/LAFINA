@@ -1,35 +1,43 @@
 import json
 import logging
-import pytest
-from pydantic import SecretStr
-import httpx
-from httpx import AsyncClient, MockTransport, Response
 
-from backend.app.config import Settings
+import httpx
+import pytest
 from backend.app.clients.deepseek import (
-    DeepSeekClient,
     DeepSeekAuthenticationError,
     DeepSeekBillingError,
-    DeepSeekRateLimitError,
+    DeepSeekClient,
     DeepSeekInvalidRequestError,
-    DeepSeekProviderServerError,
-    DeepSeekTimeoutError,
     DeepSeekMalformedResponseError,
-    DeepSeekTransportError
+    DeepSeekProviderServerError,
+    DeepSeekRateLimitError,
+    DeepSeekTimeoutError,
+    DeepSeekTransportError,
 )
-
+from backend.app.config import Settings
+from httpx import AsyncClient, MockTransport, Response
+from pydantic import SecretStr
 
 # --- Configuration Tests ---
 
+
 def test_production_rejects_missing_or_placeholder_keys():
     """Production environment must fail fast if DEEPSEEK_API_KEY is missing or placeholder."""
-    for invalid_key in [None, "", "mock-deepseek-key-for-dev", "your-deepseek-api-key", "placeholder"]:
+    for invalid_key in [
+        None,
+        "",
+        "mock-deepseek-key-for-dev",
+        "your-deepseek-api-key",
+        "placeholder",
+    ]:
         with pytest.raises(ValueError) as exc_info:
             Settings(
                 ENVIRONMENT="production",
-                DEEPSEEK_API_KEY=SecretStr(invalid_key) if invalid_key is not None else None
+                DEEPSEEK_API_KEY=SecretStr(invalid_key) if invalid_key is not None else None,
             )
-        assert "DEEPSEEK_API_KEY secret environment variable must be configured" in str(exc_info.value)
+        assert "DEEPSEEK_API_KEY secret environment variable must be configured" in str(
+            exc_info.value
+        )
 
 
 def test_development_allows_missing_key():
@@ -48,6 +56,7 @@ def test_secret_redaction_in_settings_representation():
 
 
 # --- Client Provider Tests (Using httpx.MockTransport) ---
+
 
 @pytest.mark.asyncio
 async def test_client_successful_chat_completion(caplog):
@@ -69,23 +78,21 @@ async def test_client_successful_chat_completion(caplog):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": "Hello! I am LAFINA Online AI."},
-                        "finish_reason": "stop"
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello! I am LAFINA Online AI.",
+                        },
+                        "finish_reason": "stop",
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 12,
-                    "completion_tokens": 8,
-                    "total_tokens": 20
-                }
-            }
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            },
         )
 
     transport = MockTransport(handler)
     mock_httpx = AsyncClient(transport=transport)
     settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-valid-test-key-999")
+        ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-valid-test-key-999")
     )
     client = DeepSeekClient(settings=settings, client=mock_httpx)
 
@@ -93,7 +100,7 @@ async def test_client_successful_chat_completion(caplog):
     reply, usage = await client.chat_completion(
         messages=[{"role": "user", "content": "Hello"}],
         user_id=user_uuid,
-        request_id="req-test-100"
+        request_id="req-test-100",
     )
 
     assert reply == "Hello! I am LAFINA Online AI."
@@ -128,20 +135,18 @@ async def test_client_error_mappings():
         (503, DeepSeekProviderServerError, 503),
     ]
 
-    settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-test-key")
-    )
+    settings = Settings(ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-test-key"))
 
     for status_code, expected_exc, expected_status in status_exception_map:
-        transport = MockTransport(lambda req, sc=status_code: Response(sc, json={"error": "upstream error"}))
+        transport = MockTransport(
+            lambda req, sc=status_code: Response(sc, json={"error": "upstream error"})
+        )
         mock_httpx = AsyncClient(transport=transport)
         client = DeepSeekClient(settings=settings, client=mock_httpx)
 
         with pytest.raises(expected_exc) as exc_info:
             await client.chat_completion(
-                messages=[{"role": "user", "content": "test"}],
-                user_id="user-123"
+                messages=[{"role": "user", "content": "test"}], user_id="user-123"
             )
         assert exc_info.value.status_code == expected_status
         # Ensure secret is not in exception message
@@ -151,15 +156,13 @@ async def test_client_error_mappings():
 @pytest.mark.asyncio
 async def test_client_timeout_handling():
     """Verify httpx.TimeoutException maps to 504 DeepSeekTimeoutError."""
+
     def handler(request: httpx.Request):
         raise httpx.TimeoutException("Connection timed out", request=request)
 
     transport = MockTransport(handler)
     mock_httpx = AsyncClient(transport=transport)
-    settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-test-key")
-    )
+    settings = Settings(ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-test-key"))
     client = DeepSeekClient(settings=settings, client=mock_httpx)
 
     with pytest.raises(DeepSeekTimeoutError) as exc_info:
@@ -170,15 +173,13 @@ async def test_client_timeout_handling():
 @pytest.mark.asyncio
 async def test_client_transport_failure():
     """Verify network connection/transport error maps to 503 DeepSeekTransportError."""
+
     def handler(request: httpx.Request):
         raise httpx.ConnectError("Failed to connect", request=request)
 
     transport = MockTransport(handler)
     mock_httpx = AsyncClient(transport=transport)
-    settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-test-key")
-    )
+    settings = Settings(ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-test-key"))
     client = DeepSeekClient(settings=settings, client=mock_httpx)
 
     with pytest.raises(DeepSeekTransportError) as exc_info:
@@ -196,10 +197,7 @@ async def test_client_malformed_and_empty_responses():
         Response(200, json={"choices": [{"message": {"content": ""}}]}),
     ]
 
-    settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-test-key")
-    )
+    settings = Settings(ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-test-key"))
 
     for resp in malformed_responses:
         transport = MockTransport(lambda req, r=resp: r)

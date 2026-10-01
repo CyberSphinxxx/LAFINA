@@ -13,6 +13,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { Fonts, Colors, Shadows } from '../../theme';
 import { ImportBatch } from '../../../storage/importedBatchesStore';
 import { HOLIDAY_CALENDAR_ID, HOLIDAY_CALENDAR_NAME } from '../../screens/calendar/utils/philippineHolidays';
+import { formatStoredDate } from '../../../utils/dateFormat';
 
 interface CalendarLayersModalProps {
   visible: boolean;
@@ -133,7 +134,7 @@ export const CalendarLayersModal: React.FC<CalendarLayersModalProps> = ({
                   batches.map((batch) => {
                     const batchVisible = visibilityMap[batch.id] !== false;
                     const color = getHashColor(batch.fileName);
-                    const dateStr = new Date(batch.timestamp).toLocaleDateString('en-US', {
+                    const dateStr = formatStoredDate(batch.timestamp, {
                       month: 'short',
                       day: 'numeric',
                     });

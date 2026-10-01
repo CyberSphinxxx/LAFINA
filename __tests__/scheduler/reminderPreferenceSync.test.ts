@@ -74,4 +74,75 @@ describe('reminder preference synchronization', () => {
       triggerAtMs: new Date('2026-07-17T11:00:00.000Z').getTime(),
     });
   });
+
+  it('rejects lead times outside the 0-120 minute range', async () => {
+    for (const invalid of [-1, 121, 1.5, Number.NaN]) {
+      await expect(refreshPendingReminderLeadTimes(userId, invalid)).rejects.toThrow(
+        'Reminder lead time must be between 0 and 120 minutes.'
+      );
+    }
+  });
+
+  it('counts a reminder as failed when the native alarm cannot be scheduled', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    (nativeReminder.scheduleExactAlarm as jest.Mock).mockResolvedValueOnce(false);
+    remindersStore.insertReminder({
+      id: 'unreachable_reminder',
+      userId,
+      task: 'Submit thesis draft',
+      description: null,
+      scheduledAt: '2026-07-17T12:00:00.000Z',
+      triggerAt: '2026-07-17T11:45:00.000Z',
+      status: 'pending',
+      preCastAudioPath: null,
+    });
+
+    await expect(refreshPendingReminderLeadTimes(userId, 60)).resolves.toEqual({
+      updatedCount: 0,
+      failedCount: 1,
+    });
+
+    expect(remindersStore.getReminderById('unreachable_reminder')?.triggerAt).toBe(
+      '2026-07-17T11:45:00.000Z'
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      '[ReminderPreferences] Failed to apply updated lead time:',
+      'unreachable_reminder',
+      expect.any(Error)
+    );
+  });
+
+  it('restores the original alarm when the database rejects the new trigger time', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(remindersStore, 'updateReminderTriggerAt').mockImplementation(() => {
+      throw new Error('database is locked');
+    });
+    remindersStore.insertReminder({
+      id: 'rollback_reminder',
+      userId,
+      task: 'Submit thesis draft',
+      description: null,
+      scheduledAt: '2026-07-17T12:00:00.000Z',
+      triggerAt: '2026-07-17T11:45:00.000Z',
+      status: 'pending',
+      preCastAudioPath: null,
+    });
+
+    await expect(refreshPendingReminderLeadTimes(userId, 60)).resolves.toEqual({
+      updatedCount: 0,
+      failedCount: 1,
+    });
+
+    // First the requested lead time, then the original alarm restored.
+    expect(nativeReminder.scheduleExactAlarm).toHaveBeenNthCalledWith(1, {
+      reminderId: 'rollback_reminder',
+      task: 'Submit thesis draft',
+      triggerAtMs: new Date('2026-07-17T11:00:00.000Z').getTime(),
+    });
+    expect(nativeReminder.scheduleExactAlarm).toHaveBeenNthCalledWith(2, {
+      reminderId: 'rollback_reminder',
+      task: 'Submit thesis draft',
+      triggerAtMs: new Date('2026-07-17T11:45:00.000Z').getTime(),
+    });
+  });
 });

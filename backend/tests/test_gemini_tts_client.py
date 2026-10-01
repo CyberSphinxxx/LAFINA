@@ -1,22 +1,22 @@
 import base64
 import json
 import logging
-import pytest
-from pydantic import SecretStr
-import httpx
-from httpx import MockTransport, Response
 
-from backend.app.config import Settings
+import httpx
+import pytest
 from backend.app.clients.gemini_tts import (
+    GeminiTtsAuthenticationError,
     GeminiTtsClient,
     GeminiTtsConfigError,
-    GeminiTtsAuthenticationError,
-    GeminiTtsRateLimitError,
     GeminiTtsInvalidRequestError,
+    GeminiTtsMalformedResponseError,
     GeminiTtsProviderServerError,
+    GeminiTtsRateLimitError,
     GeminiTtsTimeoutError,
-    GeminiTtsMalformedResponseError
 )
+from backend.app.config import Settings
+from httpx import MockTransport, Response
+from pydantic import SecretStr
 
 
 def create_dummy_pcm(sample_count: int = 480) -> bytes:
@@ -56,7 +56,7 @@ async def test_gemini_tts_client_success(caplog):
                                 {
                                     "inlineData": {
                                         "mimeType": "audio/L16;codec=pcm;rate=24000",
-                                        "data": pcm_b64
+                                        "data": pcm_b64,
                                     }
                                 }
                             ]
@@ -66,16 +66,15 @@ async def test_gemini_tts_client_success(caplog):
                 "usageMetadata": {
                     "promptTokenCount": 15,
                     "candidatesTokenCount": 0,
-                    "totalTokenCount": 15
-                }
-            }
+                    "totalTokenCount": 15,
+                },
+            },
         )
 
     transport = MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http_client:
         settings = Settings(
-            ENVIRONMENT="development",
-            GEMINI_API_KEY=SecretStr("test-gemini-key-12345")
+            ENVIRONMENT="development", GEMINI_API_KEY=SecretStr("test-gemini-key-12345")
         )
         client = GeminiTtsClient(settings=settings, client=http_client)
         wav_b64, usage = await client.synthesize_speech("Test reminder task", request_id="req-123")
@@ -84,7 +83,12 @@ async def test_gemini_tts_client_success(caplog):
     assert "x-goog-api-key" in captured["headers"]
     assert captured["headers"]["x-goog-api-key"] == "test-gemini-key-12345"
     assert "gemini-3.1-flash-tts-preview" in captured["url"]
-    assert captured["body"]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Aoede"
+    assert (
+        captured["body"]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"][
+            "voiceName"
+        ]
+        == "Aoede"
+    )
     assert captured["body"]["contents"][0]["role"] == "user"
     assert captured["body"]["contents"][0]["parts"][0]["text"] == (
         "## Transcript:\nTest reminder task"
@@ -119,7 +123,8 @@ async def test_gemini_tts_client_error_mappings():
     ]
 
     for status_code, exc_class, expected_http_code in error_cases:
-        def handler(request: httpx.Request) -> Response:
+
+        def handler(request: httpx.Request, status_code: int = status_code) -> Response:
             return Response(status_code, json={"error": {"message": "Upstream error"}})
 
         transport = MockTransport(handler)
@@ -162,9 +167,14 @@ async def test_gemini_tts_client_malformed_responses():
 
     # Case 2: Invalid base64
     def handler_bad_b64(request: httpx.Request) -> Response:
-        return Response(200, json={
-            "candidates": [{"content": {"parts": [{"inlineData": {"data": "not-valid-base64!!!"}}]}}]
-        })
+        return Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"parts": [{"inlineData": {"data": "not-valid-base64!!!"}}]}}
+                ]
+            },
+        )
 
     async with httpx.AsyncClient(transport=MockTransport(handler_bad_b64)) as http_client:
         client = GeminiTtsClient(settings=settings, client=http_client)
@@ -173,10 +183,12 @@ async def test_gemini_tts_client_malformed_responses():
 
     # Case 3: Odd byte length PCM
     odd_pcm_b64 = base64.b64encode(b"\x00\x01\x02").decode("utf-8")
+
     def handler_odd(request: httpx.Request) -> Response:
-        return Response(200, json={
-            "candidates": [{"content": {"parts": [{"inlineData": {"data": odd_pcm_b64}}]}}]
-        })
+        return Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"inlineData": {"data": odd_pcm_b64}}]}}]},
+        )
 
     async with httpx.AsyncClient(transport=MockTransport(handler_odd)) as http_client:
         client = GeminiTtsClient(settings=settings, client=http_client)

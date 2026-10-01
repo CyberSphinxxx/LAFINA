@@ -34,7 +34,8 @@ class LafinaReminderService : Service() {
       startForeground(
         NOTIFICATION_ID,
         notification,
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
       )
     } else {
       startForeground(NOTIFICATION_ID, notification)

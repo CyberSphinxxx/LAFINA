@@ -404,7 +404,10 @@ const applyTask = (
        due_time = excluded.due_time, is_completed = excluded.is_completed,
        priority = excluded.priority, category = excluded.category,
        notes = excluded.notes, recurrence_rule = excluded.recurrence_rule,
-       updated_at = excluded.updated_at, deleted_at = NULL`,
+       updated_at = excluded.updated_at, deleted_at = NULL
+     WHERE datetime(excluded.updated_at) IS NOT NULL
+       AND datetime(tasks.updated_at) IS NOT NULL
+       AND excluded.updated_at > tasks.updated_at`,
     [
       change.entityId,
       localUserId,
@@ -508,7 +511,10 @@ const applyReminder = (
        task = excluded.task, description = excluded.description,
        scheduled_at = excluded.scheduled_at, trigger_at = excluded.trigger_at,
        status = excluded.status, snooze_count = excluded.snooze_count,
-       updated_at = excluded.updated_at, deleted_at = NULL`,
+       updated_at = excluded.updated_at, deleted_at = NULL
+     WHERE datetime(excluded.updated_at) IS NOT NULL
+       AND datetime(reminders.updated_at) IS NOT NULL
+       AND excluded.updated_at > reminders.updated_at`,
     [
       change.entityId,
       localUserId,

@@ -7,10 +7,12 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -39,6 +41,32 @@ class LafinaTTSModule(private val reactContext: ReactApplicationContext) :
   private val cmuDict = mutableMapOf<String, String>()
 
   override fun getName(): String = "LafinaTTS"
+
+  /**
+   * Tells JavaScript that another app (typically a real incoming phone call) has
+   * taken over audio, so the simulated reminder call can yield immediately.
+   */
+  private fun emitExternalAudioInterruption(focusChange: Int) {
+    try {
+      if (!reactContext.hasActiveReactInstance()) return
+      val payload = Arguments.createMap().apply {
+        putString("reason", "audio_focus_loss")
+        putInt("focusChange", focusChange)
+      }
+      reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit(EVENT_EXTERNAL_AUDIO_INTERRUPTED, payload)
+    } catch (e: Exception) {
+      Log.w("LafinaTTS", "Could not emit external audio interruption", e)
+    }
+  }
+
+  private fun handleFocusChange(focusChange: Int) {
+    if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
+      focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+    ) {
+      emitExternalAudioInterruption(focusChange)
+    }
+  }
 
   init {
     initializeVocab()
@@ -677,6 +705,14 @@ class LafinaTTSModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Requests exclusive transient audio focus for a simulated phone call.
+   *
+   * DUCK was wrong here: Spotify or YouTube kept playing at reduced volume during
+   * the reminder call, so the student heard music under LAFINA's prompt and the
+   * bleed could reach the microphone and corrupt the Whisper transcript. Exclusive
+   * focus pauses the other app for the duration of the call, like a real call.
+   */
   private fun requestPlaybackFocus(audioManager: AudioManager) {
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -684,18 +720,18 @@ class LafinaTTSModule(private val reactContext: ReactApplicationContext) :
           .setUsage(AudioAttributes.USAGE_MEDIA)
           .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
           .build()
-        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
           .setAudioAttributes(attrs)
-          .setOnAudioFocusChangeListener { /* no-op for short TTS clips */ }
+          .setOnAudioFocusChangeListener { focusChange -> handleFocusChange(focusChange) }
           .build()
         audioFocusRequest = request
         audioManager.requestAudioFocus(request)
       } else {
         @Suppress("DEPRECATION")
         audioManager.requestAudioFocus(
-          null,
+          { focusChange -> handleFocusChange(focusChange) },
           AudioManager.STREAM_MUSIC,
-          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
         )
       }
     } catch (e: Exception) {
@@ -790,5 +826,13 @@ class LafinaTTSModule(private val reactContext: ReactApplicationContext) :
       }
       out.write(byteBuffer.array())
     }
+  }
+
+  companion object {
+    /**
+     * Must stay in sync with EXTERNAL_AUDIO_INTERRUPTION_EVENT in
+     * src/scheduler/reminderAlarm.ts.
+     */
+    private const val EVENT_EXTERNAL_AUDIO_INTERRUPTED = "LAFINA_EXTERNAL_AUDIO_INTERRUPTED"
   }
 }

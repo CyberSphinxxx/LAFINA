@@ -1,3 +1,5 @@
+/* eslint-env jest */
+
 jest.mock('@react-native-documents/picker', () => ({
   pick: jest.fn(),
   isErrorWithCode: jest.fn((err) => err && typeof err === 'object' && 'code' in err),

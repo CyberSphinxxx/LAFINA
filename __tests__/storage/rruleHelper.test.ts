@@ -154,5 +154,71 @@ describe('rruleHelper', () => {
         '2029-06-15',
       ]);
     });
+
+    it('still expands a long-running daily series viewed years later', () => {
+      const start = new Date(2026, 8, 1); // September 2026
+      const end = new Date(2026, 8, 8);
+      const dates = getOccurrences(
+        '2019-01-07',
+        'FREQ=DAILY;INTERVAL=1',
+        start,
+        end
+      );
+
+      // Without fast-forwarding into the window the safety budget is exhausted
+      // by history and a valid month silently renders empty.
+      expect(dates).toEqual([
+        '2026-09-01',
+        '2026-09-02',
+        '2026-09-03',
+        '2026-09-04',
+        '2026-09-05',
+        '2026-09-06',
+        '2026-09-07',
+        '2026-09-08',
+      ]);
+    });
+
+    it('keeps COUNT relative to the series start when fast-forwarding', () => {
+      const start = new Date(2026, 8, 1);
+      const end = new Date(2026, 8, 30);
+      // A 30-occurrence series that started in 2019 is already exhausted.
+      const dates = getOccurrences(
+        '2019-01-01',
+        'FREQ=DAILY;COUNT=30',
+        start,
+        end
+      );
+
+      expect(dates).toEqual([]);
+    });
+  });
+
+  describe('malformed numeric parts', () => {
+    it('treats an unparseable COUNT as unbounded instead of zero occurrences', () => {
+      const parsed = parseRrule('FREQ=DAILY;COUNT=abc');
+      expect(parsed?.count).toBeUndefined();
+
+      const dates = getOccurrences(
+        '2026-06-15',
+        'FREQ=DAILY;COUNT=abc',
+        new Date(2026, 5, 15),
+        new Date(2026, 5, 17)
+      );
+      expect(dates).toEqual(['2026-06-15', '2026-06-16', '2026-06-17']);
+    });
+
+    it('falls back to an interval of 1 when INTERVAL is not a positive integer', () => {
+      expect(parseRrule('FREQ=DAILY;INTERVAL=0')?.interval).toBe(1);
+      expect(parseRrule('FREQ=DAILY;INTERVAL=-2')?.interval).toBe(1);
+      expect(parseRrule('FREQ=DAILY;INTERVAL=1.5')?.interval).toBe(1);
+      expect(parseRrule('FREQ=DAILY;INTERVAL=abc')?.interval).toBe(1);
+      expect(parseRrule('FREQ=DAILY;INTERVAL=3')?.interval).toBe(3);
+    });
+
+    it('ignores an unsupported FREQ value without using an unsafe cast', () => {
+      expect(parseRrule('FREQ=SECONDLY')).toBeNull();
+      expect(parseRrule('FREQ=HOURLY')).toBeNull();
+    });
   });
 });

@@ -570,4 +570,56 @@ describe('Storage Layer', () => {
       expect(latest?.featureVector).toBe(vector2);
     });
   });
+
+  describe('database configuration', () => {
+    it('requests WAL, foreign key enforcement, and a busy timeout at startup', async () => {
+      const executeSpy = jest.spyOn(db, 'executeSync');
+      await initDatabase();
+
+      const appliedStatements = executeSpy.mock.calls.map(call => call[0]);
+      expect(appliedStatements).toContain('PRAGMA journal_mode = WAL');
+      expect(appliedStatements).toContain('PRAGMA foreign_keys = ON');
+      expect(appliedStatements).toContain('PRAGMA busy_timeout = 5000');
+
+      executeSpy.mockRestore();
+
+      // The pragmas must actually take effect on the live connection.
+      expect(db.executeSync('PRAGMA foreign_keys').rows[0].foreign_keys).toBe(1);
+      expect(db.executeSync('PRAGMA busy_timeout').rows[0].timeout).toBe(5000);
+    });
+
+    it('creates indexes for the hot query paths', async () => {
+      await initDatabase();
+
+      const result = db.executeSync(
+        "SELECT name FROM sqlite_master WHERE type = 'index'"
+      );
+      const indexNames = result.rows.map((row: any) => row.name);
+
+      expect(indexNames).toContain('idx_reminders_user_status_trigger');
+      expect(indexNames).toContain('idx_tasks_user_completed_due');
+      expect(indexNames).toContain('idx_job_queue_items_status_created');
+      expect(indexNames).toContain('idx_messages_session_created');
+      expect(indexNames).toContain('idx_user_behavior_logs_user_created');
+      expect(indexNames).toContain('idx_sync_outbox_status_created');
+    });
+
+    it('enforces foreign keys so orphaned rows cannot be written', async () => {
+      expect(() =>
+        db.executeSync(
+          `INSERT INTO reminders (id, user_id, task, scheduled_at, trigger_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            'orphan_reminder',
+            'user_that_does_not_exist',
+            'Orphan',
+            new Date().toISOString(),
+            new Date().toISOString(),
+            new Date().toISOString(),
+            new Date().toISOString(),
+          ]
+        )
+      ).toThrow(/FOREIGN KEY/i);
+    });
+  });
 });

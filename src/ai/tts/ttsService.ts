@@ -11,6 +11,33 @@ interface LafinaTTSModuleType {
 
 const inFlightSyntheses = new Map<string, Promise<string>>();
 
+/** Cached announcement audio lives under the OS cache directory. */
+const TTS_CACHE_DIR = `${RNFS.CachesDirectoryPath}/tts_cache`;
+/**
+ * How long a synthesized file may stay unused before a boot sweep removes it.
+ *
+ * The cache key is derived from the spoken text, and reminder announcements embed
+ * the task name, so every distinct task creates a new file. Without a sweep the
+ * directory grows for the life of the install.
+ */
+const AUDIO_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Removes a partially written WAV so a failed synthesis cannot be served from cache.
+ *
+ * A native failure can leave a truncated file behind, and the next call would then
+ * see it as a cache hit and play a corrupt announcement forever.
+ */
+const discardPartialAudio = async (filePath: string): Promise<void> => {
+  try {
+    if (await RNFS.exists(filePath)) {
+      await RNFS.unlink(filePath);
+    }
+  } catch (error) {
+    console.warn('[TTS Cache] Could not delete a partial WAV file:', error);
+  }
+};
+
 const getNativeTTSModule = (): LafinaTTSModuleType | null => {
   const mod = NativeModules.LafinaTTS;
   if (mod && typeof mod.synthesize === 'function') {
@@ -92,7 +119,7 @@ export const synthesizeSpeech = async (text: string): Promise<string> => {
     throw new Error('Cannot synthesize empty text.');
   }
 
-  const cacheDir = `${RNFS.CachesDirectoryPath}/tts_cache`;
+  const cacheDir = TTS_CACHE_DIR;
   await RNFS.mkdir(cacheDir);
 
   const filename = getDeterministicFilename(trimmed);
@@ -132,6 +159,8 @@ export const synthesizeSpeech = async (text: string): Promise<string> => {
         );
       }
     } catch (error) {
+      // Never leave a half-written announcement behind for the cache to serve.
+      await discardPartialAudio(outputPath);
       // Clear sticky native init failures so the next attempt can reload models
       if (nativeModule.resetInitError) {
         try {
@@ -215,6 +244,47 @@ export const preCacheReminderAudio = async (
   }
 
   return '';
+};
+
+/**
+ * Deletes synthesized announcement audio that has not been used recently.
+ *
+ * Intended to run once per cold boot. Only `.wav` files older than the maximum age
+ * are removed, so audio belonging to an active call or a freshly cached phrase is
+ * never touched. Failures are logged and never thrown: a sweep must not be able to
+ * block startup on a device with an unusual cache directory.
+ *
+ * @param maxAgeMs Age threshold in milliseconds; defaults to 24 hours.
+ * @returns How many stale files were deleted.
+ */
+export const cleanOrphanedAudioCache = async (
+  maxAgeMs: number = AUDIO_CACHE_MAX_AGE_MS,
+): Promise<number> => {
+  let removed = 0;
+
+  try {
+    if (!(await RNFS.exists(TTS_CACHE_DIR))) return 0;
+
+    const cutoff = Date.now() - maxAgeMs;
+    const entries = await RNFS.readDir(TTS_CACHE_DIR);
+
+    for (const entry of entries) {
+      if (!entry.name.toLowerCase().endsWith('.wav')) continue;
+      const modifiedAt = entry.mtime ? new Date(entry.mtime).getTime() : NaN;
+      if (!Number.isFinite(modifiedAt) || modifiedAt >= cutoff) continue;
+
+      try {
+        await RNFS.unlink(entry.path);
+        removed += 1;
+      } catch (error) {
+        console.warn(`[TTS Cache] Could not delete ${entry.name}:`, error);
+      }
+    }
+  } catch (error) {
+    console.warn('[TTS Cache] Audio cache sweep skipped:', error);
+  }
+
+  return removed;
 };
 
 /**

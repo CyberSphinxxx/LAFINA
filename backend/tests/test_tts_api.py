@@ -1,16 +1,16 @@
 import base64
-import pytest
-from pydantic import SecretStr
-from httpx import AsyncClient, MockTransport, Response
-import httpx
-from sqlalchemy import select
 
-from backend.app.main import app
+import httpx
+import pytest
+from backend.app.clients.gemini_tts import GeminiTtsClient
 from backend.app.config import Settings
+from backend.app.main import app
 from backend.app.models.account import Account
 from backend.app.models.ai_usage import AIUsage
-from backend.app.clients.gemini_tts import GeminiTtsClient
 from backend.tests.conftest import TestingSessionLocal
+from httpx import AsyncClient, MockTransport, Response
+from pydantic import SecretStr
+from sqlalchemy import select
 
 
 def create_mock_gemini_client(failing: bool = False):
@@ -30,7 +30,7 @@ def create_mock_gemini_client(failing: bool = False):
                                 {
                                     "inlineData": {
                                         "mimeType": "audio/L16;codec=pcm;rate=24000",
-                                        "data": pcm_b64
+                                        "data": pcm_b64,
                                     }
                                 }
                             ]
@@ -40,9 +40,9 @@ def create_mock_gemini_client(failing: bool = False):
                 "usageMetadata": {
                     "promptTokenCount": 10,
                     "candidatesTokenCount": 0,
-                    "totalTokenCount": 10
-                }
-            }
+                    "totalTokenCount": 10,
+                },
+            },
         )
 
     settings = Settings(ENVIRONMENT="development", GEMINI_API_KEY="test-gemini-key")
@@ -68,16 +68,15 @@ async def test_tts_role_enforcement(async_client: AsyncClient):
     app.state.gemini_tts_client = create_mock_gemini_client()
 
     # 1. Register a student user (default role = student)
-    reg_student = await async_client.post("/v1/auth/register", json={
-        "email": "student_basic@ustp.edu.ph",
-        "password": "Password123!"
-    })
+    reg_student = await async_client.post(
+        "/v1/auth/register", json={"email": "student_basic@ustp.edu.ph", "password": "Password123!"}
+    )
     token_student = reg_student.json()["access_token"]
 
     res_student = await async_client.post(
         "/v1/ai/tts",
         json={"text": "Hello world"},
-        headers={"Authorization": f"Bearer {token_student}"}
+        headers={"Authorization": f"Bearer {token_student}"},
     )
     assert res_student.status_code == 403
     assert "student_pro" in res_student.json()["detail"]
@@ -92,7 +91,7 @@ async def test_tts_role_enforcement(async_client: AsyncClient):
     res_admin = await async_client.post(
         "/v1/ai/tts",
         json={"text": "Hello world"},
-        headers={"Authorization": f"Bearer {token_student}"}
+        headers={"Authorization": f"Bearer {token_student}"},
     )
     assert res_admin.status_code == 403
 
@@ -106,7 +105,7 @@ async def test_tts_role_enforcement(async_client: AsyncClient):
     res_pro = await async_client.post(
         "/v1/ai/tts",
         json={"text": "Hello world"},
-        headers={"Authorization": f"Bearer {token_student}"}
+        headers={"Authorization": f"Bearer {token_student}"},
     )
     assert res_pro.status_code == 200
     data = res_pro.json()
@@ -120,14 +119,15 @@ async def test_tts_text_validation(async_client: AsyncClient):
     """Test text validation: empty text, whitespace-only, and max 512 length limit."""
     app.state.gemini_tts_client = create_mock_gemini_client()
 
-    reg = await async_client.post("/v1/auth/register", json={
-        "email": "text_val@ustp.edu.ph",
-        "password": "Password123!"
-    })
+    reg = await async_client.post(
+        "/v1/auth/register", json={"email": "text_val@ustp.edu.ph", "password": "Password123!"}
+    )
     token = reg.json()["access_token"]
 
     async with TestingSessionLocal() as db:
-        acc = (await db.execute(select(Account).where(Account.email == "text_val@ustp.edu.ph"))).scalar_one()
+        acc = (
+            await db.execute(select(Account).where(Account.email == "text_val@ustp.edu.ph"))
+        ).scalar_one()
         acc.role = "student_pro"
         await db.commit()
 
@@ -153,15 +153,16 @@ async def test_tts_quota_and_isolation(async_client: AsyncClient):
     Success-only usage logging: failed requests must NOT consume quota.
     """
     # 1. Register student_pro user
-    reg = await async_client.post("/v1/auth/register", json={
-        "email": "quota_test@ustp.edu.ph",
-        "password": "Password123!"
-    })
+    reg = await async_client.post(
+        "/v1/auth/register", json={"email": "quota_test@ustp.edu.ph", "password": "Password123!"}
+    )
     token = reg.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     async with TestingSessionLocal() as db:
-        acc = (await db.execute(select(Account).where(Account.email == "quota_test@ustp.edu.ph"))).scalar_one()
+        acc = (
+            await db.execute(select(Account).where(Account.email == "quota_test@ustp.edu.ph"))
+        ).scalar_one()
         acc.role = "student_pro"
         await db.commit()
 
@@ -187,27 +188,34 @@ async def test_tts_quota_and_isolation(async_client: AsyncClient):
     # 4. Quota isolation check: Chat endpoint quota must STILL have full allowance!
     # Mock deepseek_client in app.state
     from backend.app.clients.deepseek import DeepSeekClient
+
     def deepseek_handler(req: httpx.Request) -> Response:
-        return Response(200, json={
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "created": 1677858288,
-            "model": "deepseek-v4-flash",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "Hello!"},
-                    "finish_reason": "stop"
-                }
-            ],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
-        })
+        return Response(
+            200,
+            json={
+                "id": "chatcmpl-123",
+                "object": "chat.completion",
+                "created": 1677858288,
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello!"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+            },
+        )
+
     settings = Settings(ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("test-ds-key"))
-    app.state.deepseek_client = DeepSeekClient(settings=settings, client=httpx.AsyncClient(transport=MockTransport(deepseek_handler)))
+    app.state.deepseek_client = DeepSeekClient(
+        settings=settings, client=httpx.AsyncClient(transport=MockTransport(deepseek_handler))
+    )
 
     res_chat = await async_client.post(
         "/v1/ai/chat",
         json={"messages": [{"role": "user", "content": "Chat test"}]},
-        headers=headers
+        headers=headers,
     )
     assert res_chat.status_code == 200

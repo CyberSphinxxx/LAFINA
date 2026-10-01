@@ -1,5 +1,17 @@
-import { NativeModules } from 'react-native';
+import { DeviceEventEmitter, NativeModules } from 'react-native';
 import type { Reminder } from '../storage';
+
+/**
+ * Native event raised when the platform hands audio to another app or a real
+ * phone call. A simulated reminder call must yield immediately when this lands.
+ */
+export const EXTERNAL_AUDIO_INTERRUPTION_EVENT =
+  'LAFINA_EXTERNAL_AUDIO_INTERRUPTED';
+
+export interface ExternalAudioInterruption {
+  reason: 'audio_focus_loss';
+  focusChange: number;
+}
 
 export type NativeCallAction = 'call' | 'answer' | 'decline';
 
@@ -143,6 +155,26 @@ export const openFullScreenIntentSettings = async (): Promise<void> => {
   const module = getNativeModule();
   if (!module?.openFullScreenIntentSettings) return;
   await module.openFullScreenIntentSettings();
+};
+
+/**
+ * Subscribes to platform notifications that another app (including an incoming
+ * GSM call) has taken over audio playback.
+ *
+ * @param listener Called for every reported external audio interruption.
+ * @returns An unsubscribe function that is always safe to call exactly once.
+ */
+export const subscribeToExternalAudioInterruption = (
+  listener: (interruption: ExternalAudioInterruption) => void,
+): (() => void) => {
+  const subscription = DeviceEventEmitter.addListener(
+    EXTERNAL_AUDIO_INTERRUPTION_EVENT,
+    (payload: ExternalAudioInterruption) => {
+      listener(payload);
+    },
+  );
+
+  return () => subscription.remove();
 };
 
 /**

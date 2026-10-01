@@ -170,7 +170,11 @@ export const userStore = {
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [id, username, normalizedEmail, hash, 'student', 1, 0, 0, 0, now, now],
         );
-        enqueueProfileMutation(id, 'create', tx);
+        try {
+          enqueueProfileMutation(id, 'create', tx);
+        } catch (e) {
+          console.warn('Failed to enqueue profile mutation to outbox:', e);
+        }
       });
       return id;
     } catch (error) {

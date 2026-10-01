@@ -1,34 +1,74 @@
+/**
+ * Unit tests for `src/scheduler/speechProvider.ts`.
+ *
+ * The provider must prefer already-rendered precast audio, and must always fall
+ * back to fresh on-device synthesis when that precast file is missing, empty or
+ * unplayable — a reminder call may never fail silently.
+ */
 import { playSpeechFile, speakTextWithTts } from '../../src/ai/tts/ttsService';
 import { defaultCallSpeechProvider } from '../../src/scheduler/speechProvider';
 
 jest.mock('../../src/ai/tts/ttsService', () => ({
   playSpeechFile: jest.fn(),
-  speakTextWithTts: jest.fn().mockResolvedValue(undefined),
+  speakTextWithTts: jest.fn(),
 }));
+
+const mockPlaySpeechFile = playSpeechFile as jest.MockedFunction<typeof playSpeechFile>;
+const mockSpeakTextWithTts = speakTextWithTts as jest.MockedFunction<typeof speakTextWithTts>;
 
 describe('defaultCallSpeechProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPlaySpeechFile.mockResolvedValue(true);
+    mockSpeakTextWithTts.mockResolvedValue(undefined);
   });
 
-  it('plays prepared reminder audio without synthesizing it again', async () => {
-    jest.mocked(playSpeechFile).mockResolvedValueOnce(true);
+  it('synthesises fresh speech when no precast audio is available', async () => {
+    const result = await defaultCallSpeechProvider.speakText('Time to study.');
 
-    await expect(defaultCallSpeechProvider.speakText('Prepared reminder', {
-      fallbackAudioPath: 'local://prepared.wav',
-    })).resolves.toEqual({ source: 'kokoro' });
-
-    expect(playSpeechFile).toHaveBeenCalledWith('local://prepared.wav');
-    expect(speakTextWithTts).not.toHaveBeenCalled();
+    expect(result).toEqual({ source: 'kokoro' });
+    expect(mockSpeakTextWithTts).toHaveBeenCalledWith('Time to study.');
+    expect(mockPlaySpeechFile).not.toHaveBeenCalled();
   });
 
-  it('falls back to fresh synthesis when prepared playback fails', async () => {
-    jest.mocked(playSpeechFile).mockRejectedValueOnce(new Error('missing audio'));
+  it('treats an explicitly null precast path as unavailable', async () => {
+    const result = await defaultCallSpeechProvider.speakText('Time to study.', {
+      fallbackAudioPath: null,
+    });
 
-    await expect(defaultCallSpeechProvider.speakText('Fresh reminder', {
-      fallbackAudioPath: 'local://missing.wav',
-    })).resolves.toEqual({ source: 'kokoro' });
+    expect(result).toEqual({ source: 'kokoro' });
+    expect(mockSpeakTextWithTts).toHaveBeenCalledWith('Time to study.');
+  });
 
-    expect(speakTextWithTts).toHaveBeenCalledWith('Fresh reminder');
+  it('plays precast audio when it is available', async () => {
+    const result = await defaultCallSpeechProvider.speakText('Time to study.', {
+      fallbackAudioPath: '/cache/reminder.wav',
+    });
+
+    expect(mockPlaySpeechFile).toHaveBeenCalledWith('/cache/reminder.wav');
+    expect(result).toEqual({ source: 'kokoro' });
+    expect(mockSpeakTextWithTts).not.toHaveBeenCalled();
+  });
+
+  it('synthesises fresh speech when precast playback reports failure', async () => {
+    mockPlaySpeechFile.mockResolvedValue(false);
+
+    const result = await defaultCallSpeechProvider.speakText('Time to study.', {
+      fallbackAudioPath: '/cache/missing.wav',
+    });
+
+    expect(result).toEqual({ source: 'kokoro' });
+    expect(mockSpeakTextWithTts).toHaveBeenCalledWith('Time to study.');
+  });
+
+  it('synthesises fresh speech when precast playback throws', async () => {
+    mockPlaySpeechFile.mockRejectedValue(new Error('native playAudio unavailable'));
+
+    const result = await defaultCallSpeechProvider.speakText('Time to study.', {
+      fallbackAudioPath: '/cache/broken.wav',
+    });
+
+    expect(result).toEqual({ source: 'kokoro' });
+    expect(mockSpeakTextWithTts).toHaveBeenCalledWith('Time to study.');
   });
 });

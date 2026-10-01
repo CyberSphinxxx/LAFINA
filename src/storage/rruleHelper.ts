@@ -12,16 +12,43 @@ export interface ParsedRrule {
   count?: number;   // Max occurrences
 }
 
+const VALID_FREQUENCIES: readonly ParsedRrule['freq'][] = [
+  'DAILY',
+  'WEEKLY',
+  'MONTHLY',
+  'YEARLY',
+];
+
+/**
+ * Parses a strictly positive base-10 integer, rejecting junk, signs, and decimals.
+ *
+ * @param value Raw RRULE part value.
+ * @returns The parsed integer, or null when the value is not a positive integer.
+ */
+const parsePositiveInt = (value: string): number | null => {
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+};
+
 /**
  * Parses an iCalendar RRULE string into a ParsedRrule object.
  * Returns null if the rule is invalid or empty.
+ *
+ * Numeric parts are validated rather than coerced: `parseInt` would turn
+ * `INTERVAL=abc` into NaN and `COUNT=abc` into NaN, which silently expanded a
+ * rule to zero occurrences instead of falling back to sensible defaults.
  */
 export const parseRrule = (ruleStr: string | null | undefined): ParsedRrule | null => {
   if (!ruleStr) return null;
 
   try {
     const parts = ruleStr.replace(/^RRULE:/i, '').split(';');
-    const rule: Partial<ParsedRrule> = {};
+    let freq: ParsedRrule['freq'] | undefined;
+    let interval: number | null = null;
+    let byday: string[] | undefined;
+    let until: string | undefined;
+    let count: number | null = null;
 
     parts.forEach((part) => {
       const [key, val] = part.split('=');
@@ -32,36 +59,43 @@ export const parseRrule = (ruleStr: string | null | undefined): ParsedRrule | nu
 
       switch (upperKey) {
         case 'FREQ':
-          if (['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(upperVal)) {
-            rule.freq = upperVal as any;
-          }
+          freq = VALID_FREQUENCIES.find(candidate => candidate === upperVal);
           break;
         case 'INTERVAL':
-          rule.interval = parseInt(upperVal, 10);
+          interval = parsePositiveInt(upperVal);
           break;
         case 'BYDAY':
-          rule.byday = upperVal.split(',');
+          byday = upperVal.split(',').map(code => code.trim());
           break;
-        case 'UNTIL':
+        case 'UNTIL': {
           // Extract date part (handles YYYYMMDD and YYYYMMDDThhmmssZ)
           const datePart = upperVal.split('T')[0];
           if (/^\d{8}$/.test(datePart)) {
             const year = datePart.substring(0, 4);
             const month = datePart.substring(4, 6);
             const day = datePart.substring(6, 8);
-            rule.until = `${year}-${month}-${day}`;
+            until = `${year}-${month}-${day}`;
           }
           break;
+        }
         case 'COUNT':
-          rule.count = parseInt(upperVal, 10);
+          count = parsePositiveInt(upperVal);
           break;
       }
     });
 
-    if (!rule.freq) return null;
-    rule.interval = rule.interval && rule.interval > 0 ? rule.interval : 1;
+    if (!freq) return null;
 
-    return rule as ParsedRrule;
+    const parsedRule: ParsedRrule = {
+      freq,
+      interval: interval !== null && interval > 0 ? interval : 1,
+    };
+    if (byday) parsedRule.byday = byday;
+    if (until) parsedRule.until = until;
+    // An unparseable COUNT is treated as unbounded rather than as zero occurrences.
+    if (count !== null) parsedRule.count = count;
+
+    return parsedRule;
   } catch (error) {
     console.error('Error parsing RRULE:', ruleStr, error);
     return null;
@@ -131,21 +165,46 @@ export const getOccurrences = (
   const interval = rule.interval;
 
   let occurrencesCount = 0;
-  const maxSafetyOccurrences = 1000; // Cap to avoid memory/perf issues or infinite loops
+  const maxSafetyIterations = 1000; // Cap to avoid memory/perf issues or infinite loops
+  // Loop passes, kept separate from occurrencesCount so fast-forwarding past a
+  // long history cannot consume the safety budget or corrupt the COUNT cursor.
+  let iterations = 0;
 
   // 1. DAILY Frequency
   if (rule.freq === 'DAILY') {
     let current = new Date(startDt);
+
+    // Fast-forward into the requested window. Without this, a daily series that
+    // started years ago burns the whole safety budget on history, every
+    // `current >= rangeStart` check fails, and a valid month renders empty.
+    if (current < rangeStart) {
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const daysBeforeWindow = Math.floor(
+        (rangeStart.getTime() - current.getTime()) / msPerDay
+      );
+      const stepsToSkip = Math.floor(daysBeforeWindow / interval);
+
+      if (stepsToSkip > 0) {
+        current.setDate(current.getDate() + stepsToSkip * interval);
+        // COUNT is relative to the series start, so seed the cursor with the
+        // occurrences that already elapsed. Round to stay exact across DST.
+        occurrencesCount = Math.floor(
+          Math.round((current.getTime() - startDt.getTime()) / msPerDay) / interval
+        );
+      }
+    }
+
     while (
       current <= rangeEnd &&
       (!untilDt || current <= untilDt) &&
       occurrencesCount < count &&
-      occurrencesCount < maxSafetyOccurrences
+      iterations < maxSafetyIterations
     ) {
       if (current >= rangeStart) {
         occurrences.push(formatLocalDate(current));
       }
       occurrencesCount++;
+      iterations++;
       // Increment by interval days
       current.setDate(current.getDate() + interval);
     }
@@ -168,8 +227,9 @@ export const getOccurrences = (
       currentWeekSunday <= rangeEnd &&
       (!untilDt || currentWeekSunday <= untilDt || getSunday(untilDt).getTime() === currentWeekSunday.getTime()) &&
       occurrencesCount < count &&
-      occurrencesCount < maxSafetyOccurrences
+      iterations < maxSafetyIterations
     ) {
+      iterations++;
       // Check if this week is active according to the interval
       const weekDiff = Math.round((currentWeekSunday.getTime() - baseSunday.getTime()) / (7 * 24 * 3600 * 1000));
       if (weekDiff % interval === 0) {
@@ -204,12 +264,13 @@ export const getOccurrences = (
       current <= rangeEnd &&
       (!untilDt || current <= untilDt) &&
       occurrencesCount < count &&
-      occurrencesCount < maxSafetyOccurrences
+      iterations < maxSafetyIterations
     ) {
       if (current >= rangeStart) {
         occurrences.push(formatLocalDate(current));
       }
       occurrencesCount++;
+      iterations++;
 
       // Advance by interval months
       const nextMonth = current.getMonth() + interval;
@@ -233,12 +294,13 @@ export const getOccurrences = (
       current <= rangeEnd &&
       (!untilDt || current <= untilDt) &&
       occurrencesCount < count &&
-      occurrencesCount < maxSafetyOccurrences
+      iterations < maxSafetyIterations
     ) {
       if (current >= rangeStart) {
         occurrences.push(formatLocalDate(current));
       }
       occurrencesCount++;
+      iterations++;
 
       // Advance by interval years
       const nextYear = current.getFullYear() + interval;

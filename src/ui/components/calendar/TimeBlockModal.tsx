@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Modal, TextInput, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, Modal, TextInput, TouchableOpacity } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Colors, Fonts, Shadows, useThemedStyles } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -184,7 +184,7 @@ export const TimeBlockModal: React.FC<TimeBlockModalProps> = ({
                   value={timeStringToDate(startTime)}
                   mode="time"
                   is24Hour={timeFormat24h}
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  display="default"
                   onChange={(_event: DateTimePickerEvent, date?: Date) => {
                     setShowStartPicker(false);
                     if (date) setStartTime(dateToTimeString(date));
@@ -208,7 +208,7 @@ export const TimeBlockModal: React.FC<TimeBlockModalProps> = ({
                   value={timeStringToDate(endTime)}
                   mode="time"
                   is24Hour={timeFormat24h}
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  display="default"
                   onChange={(_event: DateTimePickerEvent, date?: Date) => {
                     setShowEndPicker(false);
                     if (date) setEndTime(dateToTimeString(date));
