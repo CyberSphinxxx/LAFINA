@@ -18,6 +18,10 @@ const emitMock = DeviceEventEmitter.emit as jest.MockedFunction<
 
 let speechStartedListener: ((event: { captureId?: string }) => void) | null =
   null;
+let externalAudioListener: ((event: { captureId?: string }) => void) | null =
+  null;
+// The "mock" prefix is required because the jest.mock factory below reads it.
+let mockExternalAudioSubscription: { remove: jest.Mock } | null = null;
 
 jest.mock('react-native', () => {
   const rn = jest.requireActual('react-native');
@@ -43,6 +47,11 @@ jest.mock('react-native', () => {
   rn.DeviceEventEmitter.addListener = jest.fn(
     (eventName: string, listener: (event: { captureId?: string }) => void) => {
       if (eventName === 'onSpeechStarted') speechStartedListener = listener;
+      if (eventName === 'LAFINA_EXTERNAL_AUDIO_INTERRUPTED') {
+        externalAudioListener = listener;
+        mockExternalAudioSubscription = { remove: jest.fn() };
+        return mockExternalAudioSubscription;
+      }
       return { remove: jest.fn() };
     },
   );
@@ -95,6 +104,8 @@ describe('callDispatcher hands-free controller', () => {
     jest.clearAllMocks();
     emitMock.mockImplementation(() => undefined);
     speechStartedListener = null;
+    externalAudioListener = null;
+    mockExternalAudioSubscription = null;
     NativeModules.LafinaSpeechToText.startListening.mockImplementation(
       nativeSpeechResult('acknowledge'),
     );
@@ -137,6 +148,43 @@ describe('callDispatcher hands-free controller', () => {
         medianTargetMs: 1_500,
         p95LimitMs: 3_000,
       }),
+    );
+  });
+
+  it('yields the simulated call when a real phone call takes over audio', async () => {
+    insertReminder('rem-external-call', 'Physics Lab Report');
+
+    await answerCall('rem-external-call', 'user1', false);
+    expect(externalAudioListener).not.toBeNull();
+
+    // Android hands audio focus to the telephony stack when a GSM call arrives.
+    externalAudioListener?.({});
+    await flushPromises();
+
+    // The reminder must not be swallowed by the interruption: it is handed back
+    // to the scheduler so it rings again inside the auto-snooze window.
+    expect(remindersStore.getReminderById('rem-external-call')?.status).toBe(
+      'snoozed',
+    );
+    expect(DeviceEventEmitter.emit).toHaveBeenCalledWith(
+      'LAFINA_CALL_STATE_CHANGE',
+      expect.objectContaining({ state: 'disconnected' }),
+    );
+    expect(NativeModules.LafinaReminder.stopActiveCall).toHaveBeenCalled();
+  });
+
+  it('stops listening for external audio interruptions once the call ends', async () => {
+    insertReminder('rem-unsubscribe');
+
+    await answerCall('rem-unsubscribe', 'user1', false);
+    expect(mockExternalAudioSubscription).not.toBeNull();
+
+    disconnectCall();
+
+    expect(mockExternalAudioSubscription?.remove).toHaveBeenCalledTimes(1);
+    await flushPromises();
+    expect(remindersStore.getReminderById('rem-unsubscribe')?.status).toBe(
+      'triggered',
     );
   });
 

@@ -1,4 +1,10 @@
-import { generateIcsString, parseIcsString } from '../../src/storage/icsHelper';
+import {
+  MAX_OCCURRENCES_PER_RULE,
+  generateIcsString,
+  getRruleFrequency,
+  isExpandableRrule,
+  parseIcsString,
+} from '../../src/storage/icsHelper';
 import { Event, Task } from '../../src/storage/tasksStore';
 import { TimeBlock } from '../../src/storage/timeBlocksStore';
 
@@ -369,6 +375,123 @@ describe('icsHelper', () => {
     expect(day3).toBeDefined();
     expect(day3!.startTime).toBe('09:00');
     expect(day3!.title).toBe('Regular Class');
+  });
+
+  test('reads the FREQ component out of an RRULE value', () => {
+    expect(getRruleFrequency('FREQ=WEEKLY;BYDAY=MO')).toBe('WEEKLY');
+    expect(getRruleFrequency('RRULE:FREQ=daily;INTERVAL=2')).toBe('DAILY');
+    expect(getRruleFrequency('INTERVAL=2')).toBeNull();
+    expect(getRruleFrequency(null)).toBeNull();
+  });
+
+  test.each(['SECONDLY', 'MINUTELY', 'HOURLY'])(
+    'imports only the first occurrence for an unsupported FREQ=%s rule',
+    freq => {
+      const icsString = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'BEGIN:VEVENT',
+        `UID:subdaily_${freq}`,
+        'DTSTART:20260625T090000',
+        'DTEND:20260625T100000',
+        'SUMMARY:Malformed syllabus entry',
+        `RRULE:FREQ=${freq};INTERVAL=1`,
+        'X-LAFINA-TYPE:event',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n');
+
+      // Without the frequency gate this expands to tens of millions of dates.
+      const parsed = parseIcsString(icsString);
+      expect(parsed.events).toHaveLength(1);
+      expect(parsed.events[0].date).toBe('2026-06-25');
+      expect(parsed.events[0].startTime).toBe('09:00');
+      expect(parsed.events[0].endTime).toBe('10:00');
+    }
+  );
+
+  test('never materialises more than the per-rule occurrence ceiling', () => {
+    const icsString = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:densely_recurring',
+      'DTSTART:20260625T090000',
+      'DTEND:20260625T100000',
+      'SUMMARY:Every weekday evening class',
+      'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU',
+      'X-LAFINA-TYPE:event',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const parsed = parseIcsString(icsString);
+    expect(parsed.events.length).toBeLessThanOrEqual(MAX_OCCURRENCES_PER_RULE);
+  });
+
+  test('rejects RRULE numeric parts that would make the expander never terminate', () => {
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=1')).toBe(true);
+    expect(isExpandableRrule('FREQ=DAILY;COUNT=10')).toBe(true);
+    expect(isExpandableRrule('FREQ=WEEKLY;BYDAY=MO;INTERVAL=2')).toBe(true);
+
+    // Each of these makes rrule's RRuleSet.between loop forever and hang the app.
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=0')).toBe(false);
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=-1')).toBe(false);
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=1.5')).toBe(false);
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=abc')).toBe(false);
+    expect(isExpandableRrule('FREQ=DAILY;INTERVAL=')).toBe(false);
+    expect(isExpandableRrule('FREQ=DAILY;COUNT=abc')).toBe(false);
+    expect(isExpandableRrule(null)).toBe(false);
+  });
+
+  test.each(['INTERVAL=0', 'INTERVAL=-1', 'INTERVAL=1.5', 'INTERVAL=abc'])(
+    'degrades to the first occurrence for an unsafe RRULE (%s) instead of hanging',
+    unsafePart => {
+      const icsString = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'BEGIN:VEVENT',
+        'UID:broken_rule',
+        'DTSTART:20260625T090000',
+        'DTEND:20260625T100000',
+        'SUMMARY:Broken recurrence',
+        `RRULE:FREQ=DAILY;${unsafePart}`,
+        'X-LAFINA-TYPE:event',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n');
+
+      const parsed = parseIcsString(icsString);
+      expect(parsed.events).toHaveLength(1);
+      expect(parsed.events[0].title).toBe('Broken recurrence');
+      expect(parsed.events[0].date).toBe('2026-06-25');
+    }
+  );
+
+  test('degrades to the first occurrence when the RRULE frequency is invalid', () => {
+    const icsString = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:invalid_freq',
+      'DTSTART:20260625T090000',
+      'DTEND:20260625T100000',
+      'SUMMARY:Invalid frequency',
+      'RRULE:FREQ=NEVER',
+      'X-LAFINA-TYPE:event',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const parsed = parseIcsString(icsString);
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.events[0].title).toBe('Invalid frequency');
+  });
+
+  test('returns an empty import instead of throwing on unparseable content', () => {
+    expect(() => parseIcsString('not an ical file at all')).not.toThrow();
+    const parsed = parseIcsString('not an ical file at all');
+    expect(parsed).toEqual({ events: [], blocks: [], tasks: [] });
   });
 
   test('should cap infinite recurrence rules to 2 years', () => {

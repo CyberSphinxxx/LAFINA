@@ -3,9 +3,8 @@ import io
 import logging
 import time
 import wave
-from typing import Optional
-import httpx
 
+import httpx
 from backend.app.config import Settings
 
 logger = logging.getLogger("lafina.gemini_tts")
@@ -15,6 +14,7 @@ MAX_DECODED_PCM_SIZE_BYTES = 5 * 1024 * 1024  # 5 MiB cap
 
 class GeminiTtsError(Exception):
     """Base exception for Gemini TTS client errors."""
+
     def __init__(self, message: str, status_code: int = 502):
         super().__init__(message)
         self.message = message
@@ -23,57 +23,64 @@ class GeminiTtsError(Exception):
 
 class GeminiTtsConfigError(GeminiTtsError):
     """Missing or invalid Gemini API key configuration (503 Service Unavailable)."""
+
     def __init__(self, message: str = "Gemini API key is not configured or invalid."):
         super().__init__(message, status_code=503)
 
 
 class GeminiTtsAuthenticationError(GeminiTtsError):
     """Upstream 401/403 Authentication Error (503 Service Unavailable)."""
+
     def __init__(self, message: str = "Gemini provider authentication failed."):
         super().__init__(message, status_code=503)
 
 
 class GeminiTtsRateLimitError(GeminiTtsError):
     """Upstream 429 Rate Limit Error (429 Too Many Requests)."""
+
     def __init__(self, message: str = "Gemini TTS rate limit exceeded. Please try again later."):
         super().__init__(message, status_code=429)
 
 
 class GeminiTtsInvalidRequestError(GeminiTtsError):
     """Upstream 400 or 422 Invalid Request Error (502 Bad Gateway)."""
+
     def __init__(self, message: str = "Invalid request sent to Gemini TTS provider."):
         super().__init__(message, status_code=502)
 
 
 class GeminiTtsProviderServerError(GeminiTtsError):
     """Upstream 500 or 503 Server Error (503 Service Unavailable)."""
+
     def __init__(self, message: str = "Gemini TTS provider temporary outage."):
         super().__init__(message, status_code=503)
 
 
 class GeminiTtsTimeoutError(GeminiTtsError):
     """Request timeout (504 Gateway Timeout)."""
+
     def __init__(self, message: str = "Gemini TTS request timed out."):
         super().__init__(message, status_code=504)
 
 
 class GeminiTtsMalformedResponseError(GeminiTtsError):
     """Upstream payload malformed, missing audio, or invalid PCM (502 Bad Gateway)."""
-    def __init__(self, message: str = "Received malformed audio response from Gemini TTS provider."):
+
+    def __init__(
+        self, message: str = "Received malformed audio response from Gemini TTS provider."
+    ):
         super().__init__(message, status_code=502)
 
 
 class GeminiTtsTransportError(GeminiTtsError):
     """Network connection or transport failure (503 Service Unavailable)."""
+
     def __init__(self, message: str = "Failed to communicate with Gemini TTS proxy."):
         super().__init__(message, status_code=503)
 
 
 def pcm_to_wav(
-    pcm_bytes: bytes,
-    sample_rate: int = 24000,
-    channels: int = 1,
-    sample_width: int = 2
+    pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1, sample_width: int = 2
 ) -> bytes:
     """Wraps raw 16-bit PCM bytes in a standard RIFF/WAV header."""
     buf = io.BytesIO()
@@ -90,15 +97,15 @@ class GeminiTtsClient:
     Production Gemini TTS API client wrapping httpx.AsyncClient connection pool.
     Proxies requests to gemini-3.1-flash-tts-preview with Aoede voice, validates
     PCM response metadata strictly, converts PCM to WAV, and maps errors cleanly.
-    
+
     Privacy Contract: Spoken text, Base64 payloads, and API keys are strictly excluded
     from all log statements.
     """
 
-    def __init__(self, settings: Settings, client: Optional[httpx.AsyncClient] = None):
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.settings = settings
         self._custom_client = client
-        self._client: Optional[httpx.AsyncClient] = client
+        self._client: httpx.AsyncClient | None = client
 
     async def start(self) -> None:
         if self._custom_client is not None:
@@ -113,9 +120,7 @@ class GeminiTtsClient:
             self._client = None
 
     async def synthesize_speech(
-        self,
-        text: str,
-        request_id: str = ""
+        self, text: str, request_id: str = ""
     ) -> tuple[str, dict[str, int]]:
         """
         Synthesizes text to WAV base64 string via Gemini API.
@@ -138,37 +143,25 @@ class GeminiTtsClient:
             if self.settings.GEMINI_API_KEY
             else ""
         )
-        headers = {
-            "x-goog-api-key": raw_key,
-            "Content-Type": "application/json"
-        }
+        headers = {"x-goog-api-key": raw_key, "Content-Type": "application/json"}
 
         # Keep the prompt compact to reduce request overhead and match Gemini's TTS format.
         prompt_text = f"## Transcript:\n{text}"
 
         payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt_text}
-                    ]
-                }
-            ],
+            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
                     "voiceConfig": {
-                        "prebuiltVoiceConfig": {
-                            "voiceName": self.settings.GEMINI_TTS_VOICE
-                        }
+                        "prebuiltVoiceConfig": {"voiceName": self.settings.GEMINI_TTS_VOICE}
                     }
                 },
-                "temperature": 1.0
-            }
+                "temperature": 1.0,
+            },
         }
 
-        base_url = self.settings.GEMINI_BASE_URL.rstrip('/')
+        base_url = self.settings.GEMINI_BASE_URL.rstrip("/")
         model = self.settings.GEMINI_TTS_MODEL
         url = f"{base_url}/v1beta/models/{model}:generateContent"
 
@@ -178,7 +171,9 @@ class GeminiTtsClient:
             res = await self._client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException:
             duration_ms = int((time.monotonic() - start_time) * 1000)
-            logger.warning(f"Gemini TTS request timed out after {duration_ms}ms [requestId={request_id}]")
+            logger.warning(
+                f"Gemini TTS request timed out after {duration_ms}ms [requestId={request_id}]"
+            )
             raise GeminiTtsTimeoutError()
         except httpx.RequestError as exc:
             duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -205,12 +200,12 @@ class GeminiTtsClient:
             else:
                 raise GeminiTtsError(
                     message=f"Gemini TTS provider returned error status {status_code}",
-                    status_code=502
+                    status_code=502,
                 )
 
         try:
             data = res.json()
-        except Exception as parse_err:
+        except Exception as parse_err:  # noqa: BLE001 - any decode failure must become a typed provider error
             logger.error(
                 f"Gemini TTS malformed JSON response ({type(parse_err).__name__}) [requestId={request_id}]"
             )
@@ -231,7 +226,9 @@ class GeminiTtsClient:
             logger.error(
                 f"Gemini TTS response contained {len(audio_parts)} inlineData parts (expected exactly 1) [requestId={request_id}]"
             )
-            raise GeminiTtsMalformedResponseError("Response must contain exactly one audio data part.")
+            raise GeminiTtsMalformedResponseError(
+                "Response must contain exactly one audio data part."
+            )
 
         inline_data = audio_parts[0]["inlineData"]
         raw_b64 = inline_data.get("data")
@@ -242,10 +239,7 @@ class GeminiTtsClient:
         # Gemini 3.1 TTS returns audio/L16;codec=pcm;rate=24000.
         mime_type = inline_data.get("mimeType", "")
         normalized_mime_type = mime_type.lower()
-        is_supported_pcm = (
-            normalized_mime_type.startswith("audio/l16")
-            or normalized_mime_type.startswith("audio/pcm")
-        )
+        is_supported_pcm = normalized_mime_type.startswith(("audio/l16", "audio/pcm"))
         if mime_type and not is_supported_pcm:
             logger.error(f"Gemini TTS unexpected MIME type: {mime_type} [requestId={request_id}]")
             raise GeminiTtsMalformedResponseError(f"Unsupported audio MIME type: {mime_type}")
@@ -253,7 +247,7 @@ class GeminiTtsClient:
         # Strict Base64 decoding
         try:
             pcm_bytes = base64.b64decode(raw_b64, validate=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 - binascii raises several unrelated decode errors
             logger.error(f"Gemini TTS invalid base64 encoding [requestId={request_id}]")
             raise GeminiTtsMalformedResponseError("Invalid Base64 audio content.")
 
@@ -266,28 +260,34 @@ class GeminiTtsClient:
             logger.error(
                 f"Gemini TTS PCM size ({len(pcm_bytes)} bytes) exceeds limit ({MAX_DECODED_PCM_SIZE_BYTES} bytes) [requestId={request_id}]"
             )
-            raise GeminiTtsMalformedResponseError("Decoded audio stream exceeds size limit of 5 MiB.")
+            raise GeminiTtsMalformedResponseError(
+                "Decoded audio stream exceeds size limit of 5 MiB."
+            )
 
         # Validate 16-bit sample alignment (byte length must be even)
         if len(pcm_bytes) % 2 != 0:
             logger.error(
                 f"Gemini TTS PCM size ({len(pcm_bytes)} bytes) is not aligned to 16-bit samples [requestId={request_id}]"
             )
-            raise GeminiTtsMalformedResponseError("Decoded audio stream has unaligned sample length.")
+            raise GeminiTtsMalformedResponseError(
+                "Decoded audio stream has unaligned sample length."
+            )
 
         # Convert 24 kHz, 16-bit mono PCM to WAV format
         try:
             wav_bytes = pcm_to_wav(pcm_bytes, sample_rate=24000, channels=1, sample_width=2)
             wav_base64 = base64.b64encode(wav_bytes).decode("utf-8")
-        except Exception as wav_err:
-            logger.error(f"Gemini TTS WAV header creation failed: {wav_err} [requestId={request_id}]")
+        except Exception as wav_err:  # noqa: BLE001 - struct/overflow failures all map to one typed error
+            logger.error(
+                f"Gemini TTS WAV header creation failed: {wav_err} [requestId={request_id}]"
+            )
             raise GeminiTtsMalformedResponseError("Failed to encode WAV audio stream.")
 
         usage_meta = data.get("usageMetadata", {})
         usage_dict = {
             "prompt_tokens": usage_meta.get("promptTokenCount", len(text)),
             "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
-            "total_tokens": usage_meta.get("totalTokenCount", len(text))
+            "total_tokens": usage_meta.get("totalTokenCount", len(text)),
         }
 
         logger.info(

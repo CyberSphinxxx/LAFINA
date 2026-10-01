@@ -12,6 +12,7 @@ import { Check, X, Trash2 } from 'lucide-react-native';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Fonts, Colors, Shadows } from '../../theme';
 import { ImportBatch } from '../../../storage/importedBatchesStore';
+import { formatStoredDate } from '../../../utils/dateFormat';
 
 interface CalendarLayersModalProps {
   visible: boolean;
@@ -109,7 +110,7 @@ export const CalendarLayersModal: React.FC<CalendarLayersModalProps> = ({
                   batches.map((batch) => {
                     const batchVisible = visibilityMap[batch.id] !== false;
                     const color = getHashColor(batch.fileName);
-                    const dateStr = new Date(batch.timestamp).toLocaleDateString('en-US', {
+                    const dateStr = formatStoredDate(batch.timestamp, {
                       month: 'short',
                       day: 'numeric',
                     });

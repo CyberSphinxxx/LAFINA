@@ -12,6 +12,39 @@ import {
 } from './speechCapture';
 const LLM_MAX_TOKENS = 220;
 const LLM_TEMPERATURE = 0;
+/**
+ * Hard ceilings so a wedged native call can never leave the voice sheet spinning.
+ *
+ * Recording is bounded by the shared capture watchdog as well; this is the
+ * pipeline-level promise that the caller always settles.
+ */
+const CAPTURE_TIMEOUT_MS = 60_000;
+const INTENT_TIMEOUT_MS = 15_000;
+
+/**
+ * Rejects when an operation does not settle inside its budget.
+ *
+ * The underlying native work is not cancellable from here, so the timer is always
+ * cleared to avoid keeping a stray handle alive for the rest of the process.
+ */
+const withTimeout = <T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    operation.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 
 interface IntentExtractionRequest {
   transcript: string;
@@ -114,7 +147,11 @@ export const runOfflineVoiceScheduling = async (
       bargeIn: false,
       context: 'main_mic',
     });
-    const transcription = await capture.result;
+    const transcription = await withTimeout(
+      capture.result,
+      CAPTURE_TIMEOUT_MS,
+      'Offline speech capture timed out.',
+    );
     if (!transcription.speechDetected) {
       return unavailableResult(
         "I didn't hear speech clearly enough to schedule anything.",
@@ -137,13 +174,17 @@ export const runOfflineVoiceScheduling = async (
     if (deterministicResult.intent === 'schedule') {
       nluResult = deterministicResult;
     } else {
-      const rawNluJson = await modules.LafinaIntentExtractor.extractIntentJson({
-        transcript,
-        prompt: buildNluPrompt(transcript),
-        model: AI_MODEL_ASSETS.llm,
-        temperature: LLM_TEMPERATURE,
-        maxTokens: LLM_MAX_TOKENS,
-      });
+      const rawNluJson = await withTimeout(
+        modules.LafinaIntentExtractor.extractIntentJson({
+          transcript,
+          prompt: buildNluPrompt(transcript),
+          model: AI_MODEL_ASSETS.llm,
+          temperature: LLM_TEMPERATURE,
+          maxTokens: LLM_MAX_TOKENS,
+        }),
+        INTENT_TIMEOUT_MS,
+        'Offline intent extraction timed out.',
+      );
       nluResult = parseNluJson(rawNluJson);
     }
     const scheduleResult = applyNluScheduleResult(nluResult, userId);
@@ -189,13 +230,17 @@ export const runLocalLlmChat = async (
 
   if (modules.LafinaIntentExtractor) {
     try {
-      const rawNluJson = await modules.LafinaIntentExtractor.extractIntentJson({
-        transcript: normalizedUserText,
-        prompt: buildNluPrompt(normalizedUserText),
-        model: AI_MODEL_ASSETS.llm,
-        temperature: LLM_TEMPERATURE,
-        maxTokens: LLM_MAX_TOKENS,
-      });
+      const rawNluJson = await withTimeout(
+        modules.LafinaIntentExtractor.extractIntentJson({
+          transcript: normalizedUserText,
+          prompt: buildNluPrompt(normalizedUserText),
+          model: AI_MODEL_ASSETS.llm,
+          temperature: LLM_TEMPERATURE,
+          maxTokens: LLM_MAX_TOKENS,
+        }),
+        INTENT_TIMEOUT_MS,
+        'Offline intent extraction timed out.',
+      );
 
       const nluResult = parseNluJson(rawNluJson);
       const scheduleResult = applyNluScheduleResult(nluResult, userId);

@@ -1,6 +1,7 @@
 import pytest
 from httpx import AsyncClient
 
+
 @pytest.mark.asyncio
 async def test_healthz(async_client: AsyncClient):
     res = await async_client.get("/healthz")
@@ -8,76 +9,105 @@ async def test_healthz(async_client: AsyncClient):
     data = res.json()
     assert data["status"] == "ok"
 
+
+@pytest.mark.asyncio
+async def test_cors_never_echoes_an_untrusted_origin(async_client: AsyncClient):
+    """A credentialed wildcard would echo any Origin back, exposing authenticated data."""
+    res = await async_client.get("/healthz", headers={"Origin": "https://evil.example"})
+
+    assert res.status_code == 200
+    assert "access-control-allow-origin" not in res.headers
+
+
+@pytest.mark.asyncio
+async def test_cors_allows_only_local_development_origins(async_client: AsyncClient):
+    res = await async_client.get("/healthz", headers={"Origin": "http://localhost:5173"})
+
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    assert res.headers.get("access-control-allow-credentials") == "true"
+
+
+@pytest.mark.asyncio
+async def test_rejects_malformed_content_length_header(async_client: AsyncClient):
+    """A junk Content-Length must be a 400, not an unhandled 500."""
+    res = await async_client.get("/healthz", headers={"Content-Length": "not-a-number"})
+
+    assert res.status_code == 400
+    assert "Malformed Content-Length" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_rejects_oversized_body(async_client: AsyncClient):
+    res = await async_client.get("/healthz", headers={"Content-Length": "99999999"})
+
+    assert res.status_code == 413
+
+
 @pytest.mark.asyncio
 async def test_register_and_login(async_client: AsyncClient):
     # Reject passwords shorter than the shared six-character minimum.
-    short_res = await async_client.post("/v1/auth/register", json={
-        "email": "student@ustp.edu.ph",
-        "password": "12345"
-    })
+    short_res = await async_client.post(
+        "/v1/auth/register", json={"email": "student@ustp.edu.ph", "password": "12345"}
+    )
     assert short_res.status_code == 400
     assert "at least 6 characters" in short_res.json()["detail"]
 
     # Accept exactly six characters.
-    six_res = await async_client.post("/v1/auth/register", json={
-        "email": "six@ustp.edu.ph",
-        "password": "abc123"
-    })
+    six_res = await async_client.post(
+        "/v1/auth/register", json={"email": "six@ustp.edu.ph", "password": "abc123"}
+    )
     assert six_res.status_code == 201
 
     # Reject passwords longer than 128 characters.
-    long_res = await async_client.post("/v1/auth/register", json={
-        "email": "long@ustp.edu.ph",
-        "password": "x" * 129
-    })
+    long_res = await async_client.post(
+        "/v1/auth/register", json={"email": "long@ustp.edu.ph", "password": "x" * 129}
+    )
     assert long_res.status_code == 400
     assert "no more than 128 characters" in long_res.json()["detail"]
 
-    short_login_res = await async_client.post("/v1/auth/login", json={
-        "email": "six@ustp.edu.ph",
-        "password": "12345"
-    })
+    short_login_res = await async_client.post(
+        "/v1/auth/login", json={"email": "six@ustp.edu.ph", "password": "12345"}
+    )
     assert short_login_res.status_code == 400
 
     # Valid registration.
-    reg_res = await async_client.post("/v1/auth/register", json={
-        "email": "student@ustp.edu.ph",
-        "password": "super-strong-lafina-passphrase-2026"
-    })
+    reg_res = await async_client.post(
+        "/v1/auth/register",
+        json={"email": "student@ustp.edu.ph", "password": "super-strong-lafina-passphrase-2026"},
+    )
     assert reg_res.status_code == 201
     reg_data = reg_res.json()
     assert "access_token" in reg_data
     assert "refresh_token" in reg_data
     assert len(reg_data["recovery_codes"]) == 4
 
-    duplicate_res = await async_client.post("/v1/auth/register", json={
-        "email": "STUDENT@USTP.EDU.PH",
-        "password": "another-valid-password"
-    })
+    duplicate_res = await async_client.post(
+        "/v1/auth/register",
+        json={"email": "STUDENT@USTP.EDU.PH", "password": "another-valid-password"},
+    )
     assert duplicate_res.status_code == 409
 
     # Login
-    login_res = await async_client.post("/v1/auth/login", json={
-        "email": "Student@USTP.EDU.PH",
-        "password": "super-strong-lafina-passphrase-2026",
-        "device_info": "Pixel 7 Android 14"
-    })
+    login_res = await async_client.post(
+        "/v1/auth/login",
+        json={
+            "email": "Student@USTP.EDU.PH",
+            "password": "super-strong-lafina-passphrase-2026",
+            "device_info": "Pixel 7 Android 14",
+        },
+    )
     assert login_res.status_code == 200
     login_data = login_res.json()
     refresh_token = login_data["refresh_token"]
 
     # Refresh Token Rotation
-    ref_res = await async_client.post("/v1/auth/refresh", json={
-        "refresh_token": refresh_token
-    })
+    ref_res = await async_client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert ref_res.status_code == 200
     new_token_data = ref_res.json()
     assert new_token_data["refresh_token"] != refresh_token
 
     # Old refresh token is revoked
-    old_ref_res = await async_client.post("/v1/auth/refresh", json={
-        "refresh_token": refresh_token
-    })
+    old_ref_res = await async_client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert old_ref_res.status_code == 401
 
     # Check /me profile with rotated token
@@ -91,37 +121,38 @@ async def test_register_and_login(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_recovery_password_policy(async_client: AsyncClient):
-    short_res = await async_client.post("/v1/auth/recover", json={
-        "email": "missing@ustp.edu.ph",
-        "recovery_code": "MISSING",
-        "new_password": "12345"
-    })
+    short_res = await async_client.post(
+        "/v1/auth/recover",
+        json={"email": "missing@ustp.edu.ph", "recovery_code": "MISSING", "new_password": "12345"},
+    )
     assert short_res.status_code == 400
     assert "at least 6 characters" in short_res.json()["detail"]
 
-    long_res = await async_client.post("/v1/auth/recover", json={
-        "email": "missing@ustp.edu.ph",
-        "recovery_code": "MISSING",
-        "new_password": "x" * 129
-    })
+    long_res = await async_client.post(
+        "/v1/auth/recover",
+        json={
+            "email": "missing@ustp.edu.ph",
+            "recovery_code": "MISSING",
+            "new_password": "x" * 129,
+        },
+    )
     assert long_res.status_code == 400
     assert "no more than 128 characters" in long_res.json()["detail"]
 
-    six_res = await async_client.post("/v1/auth/recover", json={
-        "email": "missing@ustp.edu.ph",
-        "recovery_code": "MISSING",
-        "new_password": "abc123"
-    })
+    six_res = await async_client.post(
+        "/v1/auth/recover",
+        json={"email": "missing@ustp.edu.ph", "recovery_code": "MISSING", "new_password": "abc123"},
+    )
     assert six_res.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_sync_batch_and_tampering_defense(async_client: AsyncClient):
     # Register & get token
-    reg_res = await async_client.post("/v1/auth/register", json={
-        "email": "sync_user@ustp.edu.ph",
-        "password": "super-strong-lafina-passphrase-2026"
-    })
+    reg_res = await async_client.post(
+        "/v1/auth/register",
+        json={"email": "sync_user@ustp.edu.ph", "password": "super-strong-lafina-passphrase-2026"},
+    )
     token = reg_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -135,13 +166,12 @@ async def test_sync_batch_and_tampering_defense(async_client: AsyncClient):
         "payload": {
             "title": "Hack Exam",
             "owner_id": "00000000-0000-0000-0000-000000000000",
-            "role": "admin"
-        }
+            "role": "admin",
+        },
     }
-    sync_res = await async_client.post("/v1/sync/batch", headers=headers, json={
-        "mutations": [tamper_mutation],
-        "cursor": 0
-    })
+    sync_res = await async_client.post(
+        "/v1/sync/batch", headers=headers, json={"mutations": [tamper_mutation], "cursor": 0}
+    )
     assert sync_res.status_code == 200
     sync_data = sync_res.json()
     assert len(sync_data["rejected"]) == 1
@@ -160,13 +190,12 @@ async def test_sync_batch_and_tampering_defense(async_client: AsyncClient):
             "due_time": "14:00",
             "is_completed": False,
             "priority": "high",
-            "category": "Academics"
-        }
+            "category": "Academics",
+        },
     }
-    sync_valid_res = await async_client.post("/v1/sync/batch", headers=headers, json={
-        "mutations": [valid_mutation],
-        "cursor": 0
-    })
+    sync_valid_res = await async_client.post(
+        "/v1/sync/batch", headers=headers, json={"mutations": [valid_mutation], "cursor": 0}
+    )
     assert sync_valid_res.status_code == 200
     res_data = sync_valid_res.json()
     assert len(res_data["accepted"]) == 1
@@ -174,41 +203,46 @@ async def test_sync_batch_and_tampering_defense(async_client: AsyncClient):
     assert len(res_data["changes"]) == 1
     assert res_data["changes"][0]["entityId"] == "task-001"
 
+
 @pytest.mark.asyncio
 async def test_online_ai_proxy(async_client: AsyncClient):
-    from pydantic import SecretStr
-    from httpx import AsyncClient as HttpxAsyncClient, MockTransport, Response
-    from sqlalchemy import select, func
-    from backend.tests.conftest import TestingSessionLocal
+    from backend.app.api.v1.ai import get_deepseek_client
+    from backend.app.clients.deepseek import DeepSeekClient
+    from backend.app.config import Settings
+    from backend.app.main import app
     from backend.app.models.account import Account
     from backend.app.models.ai_usage import AIUsage
-    from backend.app.config import Settings
-    from backend.app.clients.deepseek import DeepSeekClient
-    from backend.app.api.v1.ai import get_deepseek_client
-    from backend.app.main import app
+    from backend.tests.conftest import TestingSessionLocal
+    from httpx import AsyncClient as HttpxAsyncClient
+    from httpx import MockTransport, Response
+    from pydantic import SecretStr
+    from sqlalchemy import func, select
 
     # 1. Unauthenticated attempt should be rejected with 401
-    unauth_res = await async_client.post("/v1/ai/chat", json={
-        "messages": [{"role": "user", "content": "Hello?"}]
-    })
+    unauth_res = await async_client.post(
+        "/v1/ai/chat", json={"messages": [{"role": "user", "content": "Hello?"}]}
+    )
     assert unauth_res.status_code == 401
 
     # Register user
     password = "super-strong-lafina-passphrase-2026"
-    reg_res = await async_client.post("/v1/auth/register", json={
-        "email": "ai_user@ustp.edu.ph",
-        "password": password
-    })
+    reg_res = await async_client.post(
+        "/v1/auth/register", json={"email": "ai_user@ustp.edu.ph", "password": password}
+    )
     token = reg_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     # 2. Student role attempt should be rejected with 403 Forbidden before provider call
-    student_chat_res = await async_client.post("/v1/ai/chat", headers=headers, json={
-        "requestId": "req-001",
-        "messages": [
-            {"role": "user", "content": "How do I organize my study schedule for midterms?"}
-        ]
-    })
+    student_chat_res = await async_client.post(
+        "/v1/ai/chat",
+        headers=headers,
+        json={
+            "requestId": "req-001",
+            "messages": [
+                {"role": "user", "content": "How do I organize my study schedule for midterms?"}
+            ],
+        },
+    )
     assert student_chat_res.status_code == 403
     assert "student_pro" in student_chat_res.json()["detail"]
 
@@ -219,10 +253,9 @@ async def test_online_ai_proxy(async_client: AsyncClient):
         acc.role = "student_pro"
         await db.commit()
 
-    login_res = await async_client.post("/v1/auth/login", json={
-        "email": "ai_user@ustp.edu.ph",
-        "password": password
-    })
+    login_res = await async_client.post(
+        "/v1/auth/login", json={"email": "ai_user@ustp.edu.ph", "password": password}
+    )
     pro_token = login_res.json()["access_token"]
     pro_headers = {"Authorization": f"Bearer {pro_token}"}
 
@@ -231,10 +264,14 @@ async def test_online_ai_proxy(async_client: AsyncClient):
     unconfig_client = DeepSeekClient(settings=unconfig_settings)
     app.dependency_overrides[get_deepseek_client] = lambda: unconfig_client
 
-    dev_chat_res = await async_client.post("/v1/ai/chat", headers=pro_headers, json={
-        "requestId": "req-unconfigured",
-        "messages": [{"role": "user", "content": "Test unconfigured key"}]
-    })
+    dev_chat_res = await async_client.post(
+        "/v1/ai/chat",
+        headers=pro_headers,
+        json={
+            "requestId": "req-unconfigured",
+            "messages": [{"role": "user", "content": "Test unconfigured key"}],
+        },
+    )
     assert dev_chat_res.status_code == 503
     assert "not configured" in dev_chat_res.json()["detail"]
 
@@ -245,28 +282,34 @@ async def test_online_ai_proxy(async_client: AsyncClient):
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": "Here is your study plan: 1. Prioritize weak subjects."},
-                "finish_reason": "stop"
+                "message": {
+                    "role": "assistant",
+                    "content": "Here is your study plan: 1. Prioritize weak subjects.",
+                },
+                "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 15, "completion_tokens": 10, "total_tokens": 25}
+        "usage": {"prompt_tokens": 15, "completion_tokens": 10, "total_tokens": 25},
     }
     mock_transport = MockTransport(lambda req: Response(200, json=mock_response_json))
     mock_httpx = HttpxAsyncClient(transport=mock_transport)
     test_settings = Settings(
-        ENVIRONMENT="development",
-        DEEPSEEK_API_KEY=SecretStr("sk-test-valid-key")
+        ENVIRONMENT="development", DEEPSEEK_API_KEY=SecretStr("sk-test-valid-key")
     )
     mock_client = DeepSeekClient(settings=test_settings, client=mock_httpx)
 
     app.dependency_overrides[get_deepseek_client] = lambda: mock_client
 
-    pro_chat_res = await async_client.post("/v1/ai/chat", headers=pro_headers, json={
-        "requestId": "req-002",
-        "messages": [
-            {"role": "user", "content": "How do I organize my study schedule for midterms?"}
-        ]
-    })
+    pro_chat_res = await async_client.post(
+        "/v1/ai/chat",
+        headers=pro_headers,
+        json={
+            "requestId": "req-002",
+            "messages": [
+                {"role": "user", "content": "How do I organize my study schedule for midterms?"}
+            ],
+        },
+    )
     assert pro_chat_res.status_code == 200
     chat_data = pro_chat_res.json()
     assert chat_data["requestId"] == "req-002"
@@ -287,10 +330,11 @@ async def test_online_ai_proxy(async_client: AsyncClient):
 
     app.dependency_overrides[get_deepseek_client] = lambda: fail_client
 
-    fail_res = await async_client.post("/v1/ai/chat", headers=pro_headers, json={
-        "requestId": "req-fail",
-        "messages": [{"role": "user", "content": "Fail test"}]
-    })
+    fail_res = await async_client.post(
+        "/v1/ai/chat",
+        headers=pro_headers,
+        json={"requestId": "req-fail", "messages": [{"role": "user", "content": "Fail test"}]},
+    )
     assert fail_res.status_code == 503
 
     # Confirm usage count remains 1 (no new record written on failure)
@@ -299,4 +343,3 @@ async def test_online_ai_proxy(async_client: AsyncClient):
         assert usage_count_after == 1
 
     app.dependency_overrides.pop(get_deepseek_client, None)
-

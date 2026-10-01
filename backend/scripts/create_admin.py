@@ -1,10 +1,12 @@
 import asyncio
 import getpass
 import sys
-from sqlalchemy import select
-from backend.app.database import AsyncSessionLocal, engine, Base
+
+from backend.app.database import AsyncSessionLocal, Base, engine
 from backend.app.models.account import Account
 from backend.app.security.auth import hash_password
+from sqlalchemy import select
+
 
 async def create_admin(email: str, password: str):
     async with engine.begin() as conn:
@@ -19,18 +21,18 @@ async def create_admin(email: str, password: str):
             existing.role = "admin"
             existing.password_hash = hash_password(password)
             existing.is_active = True
-            print(f"[Admin CLI] Updated existing account '{email}' to admin role with new password.")
+            print(
+                f"[Admin CLI] Updated existing account '{email}' to admin role with new password."
+            )
         else:
             pwd_hash = hash_password(password)
             admin_acc = Account(
-                email=email.lower(),
-                password_hash=pwd_hash,
-                role="admin",
-                is_active=True
+                email=email.lower(), password_hash=pwd_hash, role="admin", is_active=True
             )
             db.add(admin_acc)
             print(f"[Admin CLI] Created new admin account '{email}'.")
         await db.commit()
+
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:

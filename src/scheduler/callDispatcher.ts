@@ -24,6 +24,7 @@ import {
   finishNativeIncomingCall,
   startActiveCallSession,
   stopActiveCallSession,
+  subscribeToExternalAudioInterruption,
 } from './reminderAlarm';
 import {
   CallSpeechProvider,
@@ -82,6 +83,7 @@ export interface CallCommand {
 let activeSession: CallDispatcherSession | null = null;
 let activeCallCapture: ActiveCallCapture | null = null;
 let sessionSequence = 0;
+let unsubscribeExternalAudio: (() => void) | null = null;
 
 const ACKNOWLEDGE_CONFIRMATION =
   'Great! Task acknowledged. Have a productive day.';
@@ -194,6 +196,45 @@ const stopActiveAudioAndCapture = async (
     return;
   }
   await stopSpeechPlayback().catch(() => undefined);
+};
+
+/**
+ * Ends the simulated call when another app or a real phone call takes over audio.
+ *
+ * Android hands audio focus to the telephony stack when a GSM call arrives, so
+ * continuing to speak or listen would talk over the student's real call. The
+ * reminder is handed back to the scheduler so it is not silently lost.
+ */
+const yieldCallToExternalAudio = async (): Promise<void> => {
+  const session = activeSession;
+  if (!session || !claimCallResolution(session)) return;
+
+  console.warn(
+    '[CallDispatcher] Yielding the simulated call: another app or a real phone call took over audio.',
+  );
+
+  // The other call owns the audio now, so never speak a confirmation first.
+  await stopActiveAudioAndCapture(session);
+  if (!isCurrentSession(session)) return;
+
+  const action = await autoSnoozeReminderAction(
+    session.reminderId,
+    session.userId,
+  );
+  disconnectCall(resolutionFromAction(action));
+};
+
+const subscribeToExternalAudioInterruptions = (): void => {
+  if (unsubscribeExternalAudio) return;
+  unsubscribeExternalAudio = subscribeToExternalAudioInterruption(() => {
+    void yieldCallToExternalAudio();
+  });
+};
+
+const unsubscribeFromExternalAudioInterruptions = (): void => {
+  if (!unsubscribeExternalAudio) return;
+  unsubscribeExternalAudio();
+  unsubscribeExternalAudio = null;
 };
 
 /**
@@ -601,9 +642,35 @@ export const answerCall = async (
     console.error('[CallDispatcher] Reminder not found:', reminderId);
     return;
   }
+
+  // A double tap on Answer must not open a second media session for the same
+  // reminder: the first session already owns the microphone and the audio focus.
+  if (activeSession?.reminderId === reminderId) {
+    console.warn(
+      '[CallDispatcher] Ignoring duplicate answer for the active reminder:',
+      reminderId,
+    );
+    return;
+  }
+
   if (reminder.status === 'acknowledged' || reminder.status === 'missed') {
     await finishNativeIncomingCall(reminderId);
     return;
+  }
+
+  // Android can deliver two exact alarms in the same second, but only one
+  // simulated call can own the audio. Hand the older reminder back through the
+  // automatic snooze policy (which re-arms it) instead of clobbering the session
+  // and stranding it in 'triggered' with no way to resolve it.
+  if (activeSession) {
+    await autoSnoozeCall();
+    if (activeSession) {
+      console.warn(
+        '[CallDispatcher] Refusing to replace a call that is still resolving:',
+        reminderId,
+      );
+      return;
+    }
   }
 
   await stopActiveAudioAndCapture();
@@ -620,6 +687,7 @@ export const answerCall = async (
     isResolving: false,
   };
   activeSession = session;
+  subscribeToExternalAudioInterruptions();
 
   if (voiceEnabled) {
     try {
@@ -763,6 +831,7 @@ export const manualAcknowledgeCall = async (
 export const disconnectCall = (resolution?: CallResolution): void => {
   const session = activeSession;
   if (!session) return;
+  unsubscribeFromExternalAudioInterruptions();
   session.state = 'disconnected';
   activeSession = null;
   void stopActiveAudioAndCapture(session);

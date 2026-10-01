@@ -26,42 +26,15 @@ try {
 }
 
 // 2. JS Fallback Database Engine (Mock SQL Parser)
+//
+// This engine is a development-only safety net for builds where the native
+// @op-engineering/op-sqlite bridge failed to link. It is deliberately in-memory:
+// the previous implementation tried to persist through
+// `@react-native-async-storage/async-storage`, a package that is not part of the
+// approved stack and is not installed, so every save and load silently no-opped
+// while appearing to work. Persisting through an undeclared dependency is worse
+// than not persisting at all, so the dead path was removed rather than papered over.
 const fallbackTables: { [tableName: string]: any[] } = {};
-
-const saveToStorage = () => {
-  try {
-    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-    if (AsyncStorage) {
-      AsyncStorage.setItem('lafina_js_db', JSON.stringify(fallbackTables))
-        .catch((err: unknown) => console.error('Error saving JS database to storage:', err));
-    }
-  } catch {
-    // AsyncStorage not installed/available, keep in-memory only
-  }
-};
-
-const loadFromStorage = () => {
-  try {
-    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-    if (AsyncStorage) {
-      AsyncStorage.getItem('lafina_js_db')
-        .then((val: string | null) => {
-          if (val) {
-            const parsed = JSON.parse(val);
-            Object.assign(fallbackTables, parsed);
-            console.log('Loaded JS database state from AsyncStorage.');
-          }
-        })
-        .catch((err: unknown) => console.error('Error loading JS database from storage:', err));
-    }
-  } catch {
-    // AsyncStorage not installed/available
-  }
-};
-
-if (useFallback) {
-  loadFromStorage();
-}
 
 const executeFallbackQuery = (query: string, params: any[] = []): QueryResult => {
   const q = query.trim();
@@ -105,7 +78,6 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
         }
 
         fallbackTables[tableName].push(row);
-        saveToStorage();
         return { rows: [], rowsAffected: 1, insertId: 1 };
       }
     }
@@ -134,7 +106,10 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
         }
 
         // Filter: id = ?
-        if (upper.includes('ID = ?') || upper.includes('ID=?')) {
+        // Word-boundary match so `user_id = ?` / `session_id = ?` are not
+        // mistaken for the primary key column, which would empty every
+        // per-user read.
+        if (/(?:^|[\s(])ID\s*=\s*\?/.test(upper)) {
           const idVal = params[params.length - 1];
           rows = rows.filter(r => r.id === idVal);
         }
@@ -188,7 +163,6 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
           setCols.forEach((col, index) => {
             rows[rowIndex][col] = params[index];
           });
-          saveToStorage();
           return { rows: [], rowsAffected: 1 };
         }
       }
@@ -206,7 +180,6 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
         if (rowIndex !== -1) {
           rows[rowIndex].deleted_at = deletedAt;
           rows[rowIndex].updated_at = updatedAt;
-          saveToStorage();
           return { rows: [], rowsAffected: 1 };
         }
       }
@@ -218,7 +191,6 @@ const executeFallbackQuery = (query: string, params: any[] = []): QueryResult =>
       if (match) {
         const tableName = match[1].toLowerCase();
         fallbackTables[tableName] = [];
-        saveToStorage();
         return { rows: [], rowsAffected: 1 };
       }
     }
@@ -256,7 +228,16 @@ export const db = {
       await cb(tx);
       dbInstance.executeSync('COMMIT;');
     } catch (err) {
-      dbInstance.executeSync('ROLLBACK;');
+      // A failing ROLLBACK (already-closed connection, disk gone) must never mask
+      // the error that caused it: that is the one the caller has to see and log.
+      try {
+        dbInstance.executeSync('ROLLBACK;');
+      } catch (rollbackError) {
+        console.warn(
+          '[Database] Could not roll back the failed transaction:',
+          rollbackError
+        );
+      }
       throw err;
     }
   },

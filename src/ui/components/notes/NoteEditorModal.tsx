@@ -9,7 +9,6 @@ import {
   Image,
   ActivityIndicator,
   Modal,
-  Platform,
 } from 'react-native';
 import { Colors, Fonts } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -287,7 +286,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 48 : 16,
+    paddingTop: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
   },
@@ -429,7 +428,7 @@ const styles = StyleSheet.create({
   aiActionsStrip: {
     flexDirection: 'row',
     paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 10,
+    paddingBottom: 10,
     paddingHorizontal: 12,
     justifyContent: 'space-between',
   },

@@ -9,6 +9,7 @@ export {
   playSpeechFile,
   speakTextWithTts,
   preCacheReminderAudio,
+  cleanOrphanedAudioCache,
 } from './tts/ttsService';
 
 export type {

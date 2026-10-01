@@ -1,9 +1,10 @@
-from typing import Optional
+import functools
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
-import functools
+
 
 # Generate default RSA key pair for development/testing if not provided via env
 def _generate_dev_rsa_pair():
@@ -11,13 +12,18 @@ def _generate_dev_rsa_pair():
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
+        encryption_algorithm=serialization.NoEncryption(),
     ).decode("utf-8")
-    public_pem = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode("utf-8")
+    public_pem = (
+        private_key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
     return private_pem, public_pem
+
 
 _dev_priv_pem, _dev_pub_pem = _generate_dev_rsa_pair()
 
@@ -31,12 +37,13 @@ INVALID_PLACEHOLDER_KEYS = {
     "change-me",
 }
 
+
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lafina"
     # Optional Admin Account Seeding from Environment Variables
-    ADMIN_EMAIL: Optional[str] = None
-    ADMIN_PASSWORD: Optional[str] = None
+    ADMIN_EMAIL: str | None = None
+    ADMIN_PASSWORD: str | None = None
 
     # JWT RS256 Configuration
     JWT_PRIVATE_KEY: str = _dev_priv_pem
@@ -50,6 +57,12 @@ class Settings(BaseSettings):
     ARGON2_MEMORY_COST_KIB: int = 19456  # 19 MiB
     ARGON2_TIME_COST: int = 2
     ARGON2_PARALLELISM: int = 1
+
+    # Comma-separated browser origins allowed to call this API. Native Android
+    # clients are not subject to CORS, so an empty value is the safe default.
+    # A wildcard is never permitted: combined with credentials it would let any
+    # website read authenticated responses on behalf of a signed-in student.
+    CORS_ALLOWED_ORIGINS: str = ""
 
     # Security & Rate Limiting
     MAX_BODY_SIZE_BYTES: int = 1048576  # 1 MiB
@@ -75,9 +88,22 @@ class Settings(BaseSettings):
 
     # Password blocklist (common passwords to reject)
     COMMON_PASSWORDS: set[str] = {
-        "password", "password123", "1234567890", "12345678", "qwertyuiop",
-        "administrator", "letmein123", "welcome123", "changeme123", "lafina12345"
+        "password",
+        "password123",
+        "1234567890",
+        "12345678",
+        "qwertyuiop",
+        "administrator",
+        "letmein123",
+        "welcome123",
+        "changeme123",
+        "lafina12345",
     }
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        """Parses CORS_ALLOWED_ORIGINS into a clean list of explicit origins."""
+        return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
 
     def get_deepseek_key_invalid_reason(self) -> str | None:
         if self.DEEPSEEK_API_KEY is None:
@@ -115,12 +141,10 @@ class Settings(BaseSettings):
         return self
 
     model_config = SettingsConfigDict(
-        env_file=(".env", "backend/.env", "../.env"),
-        env_file_encoding="utf-8",
-        extra="ignore"
+        env_file=(".env", "backend/.env", "../.env"), env_file_encoding="utf-8", extra="ignore"
     )
 
-@functools.lru_cache()
+
+@functools.lru_cache
 def get_settings() -> Settings:
     return Settings()
-

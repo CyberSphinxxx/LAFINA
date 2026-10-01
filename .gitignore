@@ -99,4 +99,10 @@ __pycache__/
 
 # manual ignores
 android/gradle.properties
-RELEASE.md*.db
+RELEASE.md
+*.db
+BUSINESS_PITCH_GUIDE.md
+lafina.db
+.freebuff/
+_tmp_*
+call-profile.csv

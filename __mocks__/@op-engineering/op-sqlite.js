@@ -1,22 +1,21 @@
 const Database = require('better-sqlite3');
 const db = new Database(':memory:');
 
+/**
+ * Mirrors `executeSync` from @op-engineering/op-sqlite: statements that yield rows
+ * (SELECT and read-only PRAGMAs such as `PRAGMA user_version` or
+ * `PRAGMA journal_mode = WAL`) resolve to `{ rows }`, everything else resolves to
+ * an affected-row summary.
+ */
 const executeSync = (query, params = []) => {
-  try {
-    const trimmedUpper = query.trim().toUpperCase();
-    const isSelect = trimmedUpper.startsWith('SELECT');
-    const isPragmaQuery = trimmedUpper.startsWith('PRAGMA') && !query.includes('=');
-    
-    if (isSelect || isPragmaQuery) {
-      const rows = db.prepare(query).all(params);
-      return { rows: rows };
-    } else {
-      const info = db.prepare(query).run(params);
-      return { rowsAffected: info.changes, insertId: info.lastInsertRowid, rows: [] };
-    }
-  } catch (error) {
-    throw error;
+  const statement = db.prepare(query);
+
+  if (statement.reader) {
+    return { rows: statement.all(Array.isArray(params) ? params : [params]) };
   }
+
+  const info = statement.run(Array.isArray(params) ? params : [params]);
+  return { rowsAffected: info.changes, insertId: info.lastInsertRowid, rows: [] };
 };
 
 module.exports = {
@@ -32,5 +31,5 @@ module.exports = {
       }
     },
     executeSync,
-  })
+  }),
 };

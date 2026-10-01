@@ -11,6 +11,7 @@ import {
 import { Colors, Fonts, Layout, Shadows } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Note } from '../../../storage/notesStore';
+import { formatStoredDate } from '../../../utils/dateFormat';
 import { GripVertical, Pin } from 'lucide-react-native';
 
 const lafinaDefaultLogo = require('../../../assets/lafina_default_logo.png');
@@ -242,7 +243,7 @@ export const NoteCard = React.memo<NoteCardProps>(({
             </Text>
             <View style={styles.cardFooter}>
               <Text style={[styles.cardDate, themed.cardDate]}>
-                {new Date(item.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {formatStoredDate(item.updatedAt, { month: 'short', day: 'numeric' })}
               </Text>
               {item.isVoiceTranscribed && (
                 <View style={[styles.voiceBadge, themed.voiceBadge]}>
@@ -273,7 +274,7 @@ export const NoteCard = React.memo<NoteCardProps>(({
                 </Text>
                 <View style={styles.cardFooter}>
                   <Text style={[styles.cardDate, themed.cardDate]}>
-                    {new Date(item.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    {formatStoredDate(item.updatedAt, { month: 'short', day: 'numeric' })}
                   </Text>
                   {item.isVoiceTranscribed && (
                     <View style={[styles.voiceBadge, themed.voiceBadge]}>

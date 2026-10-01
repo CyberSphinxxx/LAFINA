@@ -313,6 +313,109 @@ const resolveDtend = (vevent: any, dtstart: Date): Date => {
   return new Date(dtstart.getTime() + 60 * 60 * 1000); // default: 1 hour
 };
 
+/**
+ * RRULE frequencies LAFINA expands at import time.
+ *
+ * Sub-daily frequencies (SECONDLY, MINUTELY, HOURLY) are deliberately excluded:
+ * expanding one over the import horizon produces millions of rows and freezes or
+ * kills the JS thread, so an untrusted `.ics` file could brick the app.
+ */
+const SUPPORTED_RRULE_FREQUENCIES: ReadonlySet<string> = new Set([
+  'DAILY',
+  'WEEKLY',
+  'MONTHLY',
+  'YEARLY',
+]);
+
+/** Hard ceiling on occurrences materialised from a single RRULE. */
+export const MAX_OCCURRENCES_PER_RULE = 1000;
+
+/** Hard ceiling on total rows produced by a single imported calendar file. */
+export const MAX_IMPORTED_ITEMS = 5000;
+
+/** Longest recurrence horizon expanded when importing a recurring event. */
+const RECURRENCE_HORIZON_YEARS = 2;
+
+/** Matches a strictly positive base-10 integer with no sign or decimal part. */
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
+
+/**
+ * Parses an RRULE value into its `KEY=VALUE` parts, ignoring a leading `RRULE:`.
+ */
+const splitRruleParts = (
+  rule: string | null | undefined,
+): { key: string; value: string }[] => {
+  if (!rule) return [];
+  return rule
+    .replace(/^RRULE:/i, '')
+    .split(';')
+    .map(part => {
+      const separator = part.indexOf('=');
+      if (separator === -1) return { key: part.trim().toUpperCase(), value: '' };
+      return {
+        key: part.slice(0, separator).trim().toUpperCase(),
+        value: part.slice(separator + 1).trim(),
+      };
+    });
+};
+
+/**
+ * Rejects RRULE values that make the upstream `rrule` expander spin forever.
+ *
+ * `RRuleSet.between` iterates by adding INTERVAL to a cursor. A non-integer,
+ * zero, or negative INTERVAL never advances that cursor, so `between` blocks the
+ * JS thread indefinitely and the app must be force-stopped. Untrusted syllabus
+ * files must never be able to reach that code path.
+ *
+ * @param rule Raw RRULE string from a parsed VEVENT/VTODO.
+ * @returns True only when the numeric parts are safe to expand.
+ */
+export const isExpandableRrule = (
+  rule: string | null | undefined,
+): boolean => {
+  const parts = splitRruleParts(rule);
+  if (parts.length === 0) return false;
+
+  for (const { key, value } of parts) {
+    if (key === 'INTERVAL' || key === 'COUNT') {
+      if (!POSITIVE_INTEGER_PATTERN.test(value)) return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Extracts the FREQ component of an RRULE value, tolerating a leading `RRULE:`.
+ *
+ * @param rule Raw RRULE string from a parsed VEVENT/VTODO.
+ * @returns The upper-cased frequency token, or null when it cannot be determined.
+ */
+export const getRruleFrequency = (
+  rule: string | null | undefined,
+): string | null => {
+  if (!rule) return null;
+  const match = rule.replace(/^RRULE:/i, '').match(/(?:^|;)FREQ=([A-Za-z]+)/);
+  return match ? match[1].toUpperCase() : null;
+};
+
+/**
+ * Builds the single-occurrence fallback used when a recurrence rule cannot be expanded.
+ */
+const buildSingleOccurrence = (
+  dtstart: Date,
+  durationMs: number,
+): { date: string; startTime: string; endTime: string }[] => {
+  const occurrenceEnd = new Date(dtstart.getTime() + durationMs);
+  return [
+    {
+      date: formatUtcDate(dtstart),
+      startTime: formatUtcTime(dtstart),
+      endTime: formatUtcTime(occurrenceEnd),
+    },
+  ];
+};
+
 const expandRecurringEvent = (
   vevent: any,
   dtstart: Date,
@@ -320,38 +423,69 @@ const expandRecurringEvent = (
   rdates: string[],
 ): { date: string; startTime: string; endTime: string }[] => {
   const duration = dtend.getTime() - dtstart.getTime();
-  const ruleSet = new RRuleSet();
 
-  const rruleString = `DTSTART:${formatDateForRRule(dtstart)}\nRRULE:${vevent.rrule}`;
-  const rule = rrulestr(rruleString, { forceset: false });
-  ruleSet.rrule(rule instanceof RRule ? rule : (rule as RRuleSet).rrules()[0]);
+  const frequency = getRruleFrequency(vevent.rrule);
+  if (!frequency || !SUPPORTED_RRULE_FREQUENCIES.has(frequency)) {
+    console.warn(
+      `[icsHelper] Unsupported RRULE frequency "${frequency ?? 'unknown'}"; importing the first occurrence only.`,
+    );
+    return buildSingleOccurrence(dtstart, duration);
+  }
 
-  if (vevent.exdate) {
-    for (const ex of vevent.exdate) {
-      if (ex && ex.value) {
-        const cleanEx = cleanIcsValue(ex.value);
-        ruleSet.exdate(parseIcsDateWithValueTime(cleanEx, dtstart));
+  if (!isExpandableRrule(vevent.rrule)) {
+    console.warn(
+      '[icsHelper] RRULE has unsafe INTERVAL/COUNT values; importing the first occurrence only.',
+    );
+    return buildSingleOccurrence(dtstart, duration);
+  }
+
+  try {
+    const ruleSet = new RRuleSet();
+
+    const rruleString = `DTSTART:${formatDateForRRule(dtstart)}\nRRULE:${vevent.rrule}`;
+    const rule = rrulestr(rruleString, { forceset: false });
+    const primaryRule =
+      rule instanceof RRule ? rule : (rule as RRuleSet).rrules()[0];
+    if (!primaryRule) {
+      return buildSingleOccurrence(dtstart, duration);
+    }
+    ruleSet.rrule(primaryRule);
+
+    if (vevent.exdate) {
+      for (const ex of vevent.exdate) {
+        if (ex && ex.value) {
+          const cleanEx = cleanIcsValue(ex.value);
+          ruleSet.exdate(parseIcsDateWithValueTime(cleanEx, dtstart));
+        }
       }
     }
+
+    for (const rd of rdates) {
+      ruleSet.rdate(parseIcsDateWithValueTime(rd, dtstart));
+    }
+
+    const expansionEnd = new Date(dtstart);
+    expansionEnd.setFullYear(
+      expansionEnd.getFullYear() + RECURRENCE_HORIZON_YEARS,
+    );
+
+    const occurrences = ruleSet.between(dtstart, expansionEnd, true).slice(0, MAX_OCCURRENCES_PER_RULE);
+
+    return occurrences.map(occurrenceStart => {
+      const occurrenceEnd = new Date(occurrenceStart.getTime() + duration);
+      return {
+        date: formatUtcDate(occurrenceStart),
+        startTime: formatUtcTime(occurrenceStart),
+        endTime: formatUtcTime(occurrenceEnd),
+      };
+    });
+  } catch (error) {
+    console.warn(
+      '[icsHelper] Could not expand RRULE; importing the first occurrence only.',
+      error,
+    );
+    return buildSingleOccurrence(dtstart, duration);
   }
-
-  for (const rd of rdates) {
-    ruleSet.rdate(parseIcsDateWithValueTime(rd, dtstart));
-  }
-
-  const expansionEnd = new Date(dtstart);
-  expansionEnd.setFullYear(expansionEnd.getFullYear() + 2);
-
-  const occurrences = ruleSet.between(dtstart, expansionEnd, true);
-
-  return occurrences.map((occurrenceStart) => {
-    const occurrenceEnd = new Date(occurrenceStart.getTime() + duration);
-    return {
-      date: formatUtcDate(occurrenceStart),
-      startTime: formatUtcTime(occurrenceStart),
-      endTime: formatUtcTime(occurrenceEnd),
-    };
-  });
 };
 
 // Normalize CRLF to LF, unfold lines, and sanitize invalid dates so ical-js-parser doesn't drop events
@@ -393,20 +527,36 @@ const sanitizeIcsContent = (icsContent: string): string => {
   return sanitizedLines.join('\n');
 };
 
-/**
- * Parses an iCalendar string back into LAFINA tasks, events, and time blocks.
- * Supports unfolding lines and parsing custom properties.
- * 
- * @param icsContent The iCalendar file content string.
- * @returns Parsed events, time blocks, and tasks.
- */
-export const parseIcsString = (
-  icsContent: string
-): {
+/** Result of importing a single iCalendar document. */
+export interface ParsedIcsResult {
   events: Omit<Event, 'userId' | 'createdAt' | 'updatedAt'>[];
   blocks: Omit<TimeBlock, 'userId' | 'createdAt' | 'updatedAt'>[];
   tasks: Omit<Task, 'userId' | 'createdAt' | 'updatedAt'>[];
-} => {
+}
+
+/**
+ * Parses an iCalendar string back into LAFINA tasks, events, and time blocks.
+ * Supports unfolding lines and parsing custom properties.
+ *
+ * A malformed or hostile file must never throw into the calendar screen, so a
+ * failed import degrades to an empty result.
+ *
+ * @param icsContent The iCalendar file content string.
+ * @returns Parsed events, time blocks, and tasks.
+ */
+export const parseIcsString = (icsContent: string): ParsedIcsResult => {
+  try {
+    return parseIcsStringInternal(icsContent);
+  } catch (error) {
+    console.error(
+      '[icsHelper] iCalendar import failed; no items were imported.',
+      error,
+    );
+    return { events: [], blocks: [], tasks: [] };
+  }
+};
+
+const parseIcsStringInternal = (icsContent: string): ParsedIcsResult => {
   const events: Omit<Event, 'userId' | 'createdAt' | 'updatedAt'>[] = [];
   const blocks: Omit<TimeBlock, 'userId' | 'createdAt' | 'updatedAt'>[] = [];
   const tasks: Omit<Task, 'userId' | 'createdAt' | 'updatedAt'>[] = [];
@@ -442,16 +592,33 @@ export const parseIcsString = (
     }
   }
 
-  // Step 3: Parse with ical-js-parser
-  const parsed = ICalParser.toJSON(sanitized);
-  const rawEvents = parsed.events || [];
-  const rawTodos = parsed.todos || [];
+  // Step 3: Parse with ical-js-parser. An unparseable file must degrade to an
+  // empty import rather than throw into the calendar screen.
+  let rawEvents: any[] = [];
+  let rawTodos: any[] = [];
+  try {
+    const parsed = ICalParser.toJSON(sanitized);
+    rawEvents = parsed.events || [];
+    rawTodos = parsed.todos || [];
+  } catch (error) {
+    console.error('[icsHelper] Could not parse iCalendar content:', error);
+    return { events, blocks, tasks };
+  }
 
   const nonOverrides = rawEvents.filter(e => !e.recurrenceId);
   const overrides = rawEvents.filter(e => e.recurrenceId);
 
+  const importedItemCount = (): number =>
+    events.length + blocks.length + tasks.length;
+
   // Process VEVENTs
   for (const vevent of nonOverrides) {
+    if (importedItemCount() >= MAX_IMPORTED_ITEMS) {
+      console.warn(
+        `[icsHelper] Import stopped at the ${MAX_IMPORTED_ITEMS}-item ceiling.`,
+      );
+      break;
+    }
     const type = vevent.xLafinaType || 'event';
     const uid = vevent.uid || 'imported_' + Math.random().toString(36).substring(2, 9);
     const summary = unescapeText(vevent.summary || 'Untitled');
@@ -498,6 +665,7 @@ export const parseIcsString = (
       const expanded = expandRecurringEvent(vevent, dtstart, dtend, rdates);
 
       expanded.forEach((occurrence, idx) => {
+        if (importedItemCount() >= MAX_IMPORTED_ITEMS) return;
         const occurrenceId = `${uid}_${idx}`;
         if (type === 'time_block') {
           blocks.push({
@@ -582,6 +750,7 @@ export const parseIcsString = (
 
   // Process VTODOs
   for (const todo of rawTodos) {
+    if (importedItemCount() >= MAX_IMPORTED_ITEMS) break;
     const uid = todo.uid || 'imported_' + Math.random().toString(36).substring(2, 9);
     const summary = unescapeText(todo.summary || 'Untitled Task');
     const description = todo.description ? unescapeText(todo.description) : null;

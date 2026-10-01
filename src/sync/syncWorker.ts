@@ -54,12 +54,16 @@ export const syncWorker = {
 
       syncState.setStatus('Syncing');
 
+      // The SQLite owner every pulled row is written to. Cloud account IDs and
+      // SQLite user IDs are intentionally independent, so this is resolved from the
+      // local session rather than from anything the server sends.
+      const currentSession = userStore.getActiveSessionToken();
+      const pullOwnerId = currentSession.userId;
+
       // Refresh the active local user's role from the authenticated cloud account.
-      // Cloud account IDs and SQLite user IDs are intentionally independent.
       try {
-        const currentSession = userStore.getActiveSessionToken();
-        if (currentSession.userId) {
-          await accountLinkService.refreshCloudProfile(currentSession.userId);
+        if (pullOwnerId) {
+          await accountLinkService.refreshCloudProfile(pullOwnerId);
         }
       } catch (err) {
         console.warn('[SyncWorker] Profile refresh note:', err);
@@ -126,6 +130,21 @@ export const syncWorker = {
       // 4. Apply pull changes in a single SQLite transaction with triggers suppressed
       let reminderTextUpdated = false;
 
+      // Every pulled row belongs to the student signed in on this device. Without a
+      // local owner the writes would be partitioned under nobody and every store,
+      // which reads `WHERE user_id = ?`, would never see them again. The cursor is
+      // deliberately not advanced so the same changes are replayed after sign-in.
+      if (!pullOwnerId && response.changes.length > 0) {
+        console.warn(
+          '[SyncWorker] Skipping pull: no active local user to own the incoming rows.',
+        );
+        syncState.setStatus(
+          'Sign-in required',
+          'Sign in again before cloud changes can be stored on this device.',
+        );
+        return;
+      }
+
       await db.transaction(async (tx: DatabaseTransaction) => {
         // Suppress local trigger outbox generation during pull
         tx.executeSync('UPDATE sync_control SET suppress = 1 WHERE id = 1');
@@ -145,13 +164,17 @@ export const syncWorker = {
               if (change.entityType === 'task') {
                 tx.executeSync(
                   `INSERT INTO tasks (id, user_id, title, due_date, due_time, is_completed, priority, category, notes, recurrence_rule, created_at, updated_at)
-                   VALUES (?, 'cloud', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                    title = excluded.title, due_date = excluded.due_date, due_time = excluded.due_time,
                    is_completed = excluded.is_completed, priority = excluded.priority, category = excluded.category,
-                   notes = excluded.notes, recurrence_rule = excluded.recurrence_rule, updated_at = excluded.updated_at`,
+                   notes = excluded.notes, recurrence_rule = excluded.recurrence_rule, updated_at = excluded.updated_at
+                   WHERE datetime(excluded.updated_at) IS NOT NULL
+                     AND datetime(tasks.updated_at) IS NOT NULL
+                     AND excluded.updated_at > tasks.updated_at`,
                   [
                     change.entityId,
+                    pullOwnerId,
                     change.payload.title || '',
                     change.payload.due_date || null,
                     change.payload.due_time || null,
@@ -167,12 +190,16 @@ export const syncWorker = {
               } else if (change.entityType === 'reminder') {
                 tx.executeSync(
                   `INSERT INTO reminders (id, user_id, task, description, scheduled_at, trigger_at, status, snooze_count, created_at, updated_at)
-                   VALUES (?, 'cloud', ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                    task = excluded.task, description = excluded.description, scheduled_at = excluded.scheduled_at,
-                   trigger_at = excluded.trigger_at, status = excluded.status, snooze_count = excluded.snooze_count, updated_at = excluded.updated_at`,
+                   trigger_at = excluded.trigger_at, status = excluded.status, snooze_count = excluded.snooze_count, updated_at = excluded.updated_at
+                   WHERE datetime(excluded.updated_at) IS NOT NULL
+                     AND datetime(reminders.updated_at) IS NOT NULL
+                     AND excluded.updated_at > reminders.updated_at`,
                   [
                     change.entityId,
+                    pullOwnerId,
                     change.payload.task || '',
                     change.payload.description || null,
                     change.payload.scheduled_at || '',

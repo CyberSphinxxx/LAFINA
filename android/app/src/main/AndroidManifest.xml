@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- An answered reminder call plays the announcement and confirmations. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
       android:name=".MainApplication"
@@ -51,10 +53,15 @@
         </intent-filter>
       </receiver>
 
+      <!--
+        An answered reminder call records the student's spoken response (microphone)
+        while the offline Kokoro announcement and confirmations play (mediaPlayback).
+        Android 14+ rejects an undeclared foreground service type at runtime.
+      -->
       <service
         android:name=".LafinaReminderService"
         android:enabled="true"
         android:exported="false"
-        android:foregroundServiceType="microphone" />
+        android:foregroundServiceType="microphone|mediaPlayback" />
     </application>
 </manifest>
