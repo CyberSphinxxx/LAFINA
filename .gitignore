@@ -104,3 +104,10 @@ android/gradle.properties
 RELEASE.md
 # In-app update builds (npm run release:ota)
 /release/
+
+*.db
+lafina.db
+.freebuff/
+BUSINESS_PITCH_GUIDE.md
+_tmp_*
+call-profile.csv
